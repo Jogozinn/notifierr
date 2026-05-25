@@ -1,0 +1,100 @@
+{
+  "notes": [
+    "Add public InjuredGadgets category URLs for each model before running the updater.",
+    "Leave urls empty for models you do not want to fetch yet.",
+    "The updater follows same-site pagination and sleeps between requests.",
+    "iPhone 16 Pro Max currently uses /16-pro-max/ instead of /iphone-16-pro-max/."
+  ],
+  "models": [
+    {
+      "model": "iPhone 17 Pro Max",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-17-pro-max/"
+      ]
+    },
+    {
+      "model": "iPhone 17 Pro",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-17-pro/"
+      ]
+    },
+    {
+      "model": "iPhone 17",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-17/"
+      ]
+    },
+    {
+      "model": "iPhone 16 Pro Max",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/16-pro-max/"
+      ]
+    },
+    {
+      "model": "iPhone 16 Pro",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-16-pro/"
+      ]
+    },
+    {
+      "model": "iPhone 16",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-16/"
+      ]
+    },
+    {
+      "model": "iPhone 15 Pro Max",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-15-pro-max/"
+      ]
+    },
+    {
+      "model": "iPhone 15 Pro",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-15-pro/"
+      ]
+    },
+    {
+      "model": "iPhone 15",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-15/"
+      ]
+    },
+    {
+      "model": "iPhone 14 Pro Max",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-14-pro-max/"
+      ]
+    },
+    {
+      "model": "iPhone 14 Pro",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-14-pro/"
+      ]
+    },
+    {
+      "model": "iPhone 14",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-14/"
+      ]
+    },
+    {
+      "model": "iPhone 13 Pro Max",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-13-pro-max/"
+      ]
+    },
+    {
+      "model": "iPhone 13 Pro",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-13-pro/"
+      ]
+    },
+    {
+      "model": "iPhone 13",
+      "urls": [
+        "https://www.injuredgadgets.com/apple/iphone/iphone-13/"
+      ]
+    }
+  ]
+}

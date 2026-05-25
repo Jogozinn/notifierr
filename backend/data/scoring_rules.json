@@ -1,0 +1,53 @@
+{
+  "thresholds": {
+    "min_score_to_alert": 70,
+    "min_profit_to_alert": 75,
+    "risky_score_range": [35, 69.99]
+  },
+  "hard_reject_keywords": {
+    "water_damage": ["water damage", "water damaged", "liquid damage", "liquid damaged"],
+    "icloud_locked": ["icloud locked", "icloud lock", "apple id locked", "apple id lock"],
+    "activation_locked": ["activation locked", "activation lock"],
+    "mdm_locked": ["mdm locked", "mdm lock", "remote management"],
+    "blacklisted": ["blacklisted", "black listed"],
+    "bad_esn": ["bad esn"],
+    "financed": ["financed", "financing", "payments owed"],
+    "no_service": ["no service"],
+    "baseband": ["baseband"],
+    "logic_board": ["logic board"],
+    "motherboard": ["motherboard", "mother board"],
+    "bent_frame": ["bent frame"],
+    "major_frame_damage": ["major frame damage", "frame damaged", "badly damaged frame"],
+    "no_power": ["no power"],
+    "does_not_turn_on": ["does not turn on", "doesn't turn on", "wont turn on", "won't turn on"],
+    "face_id_not_working": [
+      "face id not working",
+      "face id does not work",
+      "face id doesn't work",
+      "face id broken",
+      "face id failed",
+      "face id fails"
+    ]
+  },
+  "positive_keywords": {
+    "cracked_screen": ["cracked screen", "screen cracked"],
+    "bad_oled": ["bad oled"],
+    "bad_battery": ["bad battery", "swollen battery", "battery service", "battery needs replacement", "battery issue"],
+    "back_glass_cracked": ["back glass cracked", "cracked back glass", "cracked back"],
+    "camera_lens_cracked": ["camera lens cracked", "cracked camera lens"],
+    "charging_port_issue": ["charging port issue", "charging port problem", "charging port bad", "charging port broken", "does not charge"],
+    "powers_on": ["powers on", "power on", "turns on", "turn on"],
+    "unlocked": ["factory unlocked", "carrier unlocked", "unlocked"],
+    "clean_imei": ["clean imei", "clean esn"],
+    "face_id_works": ["face id works", "face id working"]
+  },
+  "risk_keywords": {
+    "read_description": ["read description"],
+    "for_parts": ["for parts", "parts only"],
+    "as_is": ["as is", "as-is"],
+    "untested": ["untested"],
+    "unknown_issue": ["unknown issue", "unknown problem", "unknown condition"],
+    "multiple_issues": ["multiple issues"],
+    "ic_issue": ["no ic", "bad ic", "ic issue", "ic problem"]
+  }
+}

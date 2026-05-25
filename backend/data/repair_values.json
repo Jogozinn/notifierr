@@ -1,0 +1,604 @@
+{
+  "default": {
+    "resale_value": 250,
+    "risk_buffer": 60,
+    "min_profit": 75,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "fallback",
+    "parts_pricing_note": "Default fallback only. Actual model-specific prices are not verified.",
+    "parts": {
+      "screen_budget": 45,
+      "screen_safe": 80,
+      "screen_premium": 130,
+      "battery": 45,
+      "charging_port": 55,
+      "back_glass": 75,
+      "camera_lens": 20
+    }
+  },
+  "iPhone 17 Pro Max": {
+    "resale_value": 0,
+    "risk_buffer": 120,
+    "min_profit": 140,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated from iPhone 17 Pro / one partial 17 Pro Max page; show 'parts not accurate' in alerts. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 70,
+      "screen_safe": 143,
+      "screen_premium": 235,
+      "battery": 70,
+      "charging_port": 65,
+      "back_glass": 40,
+      "camera_lens": 8
+    },
+    "resale": {
+      "low": 900,
+      "mid": 1235,
+      "high": 1300,
+      "confidence": "low",
+      "sample_size": 0,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "256GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa data shows starting price $899 and average price ~$1309 with an unlocked 256GB average ~$1235. High end approximates the average price (around $1300) as detailed breakdown by storage is limited. Sample size was zero in the research JSON; verify this range manually before treating it as a sold-comp-backed estimate."
+    },
+    "back_glass_research": {
+      "low": 14.62,
+      "mid": 40,
+      "high": 119.99,
+      "confidence": "low",
+      "sample_size": 3,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Original agent found generic 17-series parts at about $14.62-$18.99 and a pulled OEM cover around $119.99. Mid was raised conservatively because 17-series model-specific data was thin; verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 17 Pro": {
+    "resale_value": 0,
+    "risk_buffer": 110,
+    "min_profit": 130,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Some lower-page parts not captured; missing values remain null. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 54.4,
+      "screen_safe": 103,
+      "screen_premium": 322.48,
+      "battery": 58.99,
+      "charging_port": 49.59,
+      "back_glass": 35,
+      "camera_lens": 6.66
+    },
+    "resale": {
+      "low": 580,
+      "mid": 800,
+      "high": 1074,
+      "confidence": "low",
+      "sample_size": 0,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "256GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa has limited or no sold data for iPhone 17 Pro. BankMyCell trade‑in guide lists an average market value of $579.82 and top offer $1074 for used devices. These numbers inform the low and high estimates."
+    },
+    "back_glass_research": {
+      "low": 14.62,
+      "mid": 35,
+      "high": 119.99,
+      "confidence": "low",
+      "sample_size": 2,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "No distinct 17 Pro listings were found; sellers grouped 17-series models together. Conservative mid used instead of the generic low price; verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 17": {
+    "resale_value": 0,
+    "risk_buffer": 95,
+    "min_profit": 110,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Camera-lens protector was ignored because it is not the repair lens itself. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 50.42,
+      "screen_safe": 95.4,
+      "screen_premium": 299,
+      "battery": 48.19,
+      "charging_port": null,
+      "back_glass": 25,
+      "camera_lens": null
+    },
+    "resale": {
+      "low": 620,
+      "mid": 749,
+      "high": 989,
+      "confidence": "manual_sold_comps",
+      "sample_size": 55,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "256GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa page lists starting price $618, average price ~$789 and shows 256GB average ~$749 with 55 sales; the 512GB average (~$989) forms the high end."
+    },
+    "back_glass_research": {
+      "low": 14.62,
+      "mid": 25,
+      "high": 50,
+      "confidence": "low",
+      "sample_size": 1,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Only generic multi-model 17-series listings were found. Mid/high are conservative estimates; verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 16 Pro Max": {
+    "resale_value": 0,
+    "risk_buffer": 105,
+    "min_profit": 120,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Screen_safe uses the 120Hz Soft OLED option; lower Soft OLED exists but may not preserve ProMotion expectations. Back glass price updated from eBay active listing research.",
+    "parts": {
+      "screen_budget": 32.5,
+      "screen_safe": 122.3,
+      "screen_premium": 175,
+      "battery": 45,
+      "charging_port": null,
+      "back_glass": 39,
+      "camera_lens": null
+    },
+    "resale": {
+      "low": 660,
+      "mid": 855,
+      "high": 966,
+      "confidence": "manual_sold_comps",
+      "sample_size": 42,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "256GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa sold listings show starting price $659 and average price ~$848. Unlocked 256GB average ~$855 and 512GB ~$878; high end uses 1TB average (~$966)."
+    },
+    "back_glass_research": {
+      "low": 15.47,
+      "mid": 38.99,
+      "high": 45,
+      "confidence": "medium",
+      "sample_size": 3,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Mid anchored to an OEM-style 16 Pro Max back glass cover listing around $38.99; low from generic 16-series listing.",
+      "examples": []
+    }
+  },
+  "iPhone 16 Pro": {
+    "resale_value": 0,
+    "risk_buffer": 95,
+    "min_profit": 110,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Screen_safe uses 120Hz Soft OLED option. Back glass price updated from eBay active listing research.",
+    "parts": {
+      "screen_budget": 36.75,
+      "screen_safe": 91.25,
+      "screen_premium": 226,
+      "battery": null,
+      "charging_port": null,
+      "back_glass": 34,
+      "camera_lens": null
+    },
+    "resale": {
+      "low": 470,
+      "mid": 770,
+      "high": 900,
+      "confidence": "low",
+      "sample_size": 0,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa only provides a price guide (starting price $463, average price ~$770) without enough sold data, so high and low values are approximated."
+    },
+    "back_glass_research": {
+      "low": 15.47,
+      "mid": 33.53,
+      "high": 51.57,
+      "confidence": "medium",
+      "sample_size": 3,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Dedicated 16 Pro back-glass listing around $33.53; higher housing-style proxy around $51.57.",
+      "examples": []
+    }
+  },
+  "iPhone 16": {
+    "resale_value": 0,
+    "risk_buffer": 85,
+    "min_profit": 100,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated downward from iPhone 16 Pro screenshot; show 'parts not accurate' in alerts. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 35,
+      "screen_safe": 85,
+      "screen_premium": 190,
+      "battery": 45,
+      "charging_port": 35,
+      "back_glass": 25,
+      "camera_lens": null
+    },
+    "resale": {
+      "low": 450,
+      "mid": 617,
+      "high": 664,
+      "confidence": "manual_sold_comps",
+      "sample_size": 59,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa’s price page shows starting price ~$443, average price ~$626, and unlocked 128GB average ~$617. High end uses 256GB average (~$664)."
+    },
+    "back_glass_research": {
+      "low": 15.47,
+      "mid": 25,
+      "high": 33,
+      "confidence": "low",
+      "sample_size": 1,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Regular iPhone 16 listings were mostly bundled with Plus/Pro models. Mid/high estimated from related 16-series prices.",
+      "examples": []
+    }
+  },
+  "iPhone 15 Pro Max": {
+    "resale_value": 850,
+    "risk_buffer": 100,
+    "min_profit": 120,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated upward from iPhone 15 Pro; show 'parts not accurate' in alerts. Back glass price updated from eBay active listing research.",
+    "parts": {
+      "screen_budget": 35,
+      "screen_safe": 95,
+      "screen_premium": 220,
+      "battery": 22,
+      "charging_port": 32,
+      "back_glass": 32,
+      "camera_lens": null
+    },
+    "resale": {
+      "low": 420,
+      "mid": 645,
+      "high": 720,
+      "confidence": "manual_sold_comps",
+      "sample_size": 58,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "256GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa lists starting price ~$401 and average ~$672. Unlocked 256GB averages ~$645; high end reflects 512GB (~$697) and 1TB (~$720)."
+    },
+    "back_glass_research": {
+      "low": 20,
+      "mid": 31.99,
+      "high": 72.05,
+      "confidence": "medium",
+      "sample_size": 2,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Mid anchored to a 15 Pro Max rear cover listing around $31.99; high from kit/housing-style listing around $72.05.",
+      "examples": []
+    }
+  },
+  "iPhone 15 Pro": {
+    "resale_value": 760,
+    "risk_buffer": 95,
+    "min_profit": 110,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From InjuredGadgets screenshot/page. Screen_safe is Soft OLED 120Hz QRT. Back glass uses lowest non-accessory back glass assembly. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 23.75,
+      "screen_safe": 74.95,
+      "screen_premium": 135,
+      "battery": 18.95,
+      "charging_port": 22,
+      "back_glass": 28,
+      "camera_lens": null
+    },
+    "resale": {
+      "low": 430,
+      "mid": 581,
+      "high": 620,
+      "confidence": "manual_sold_comps",
+      "sample_size": 35,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa shows starting price $426 and 128GB unlocked average $581. High end uses higher storage averages (512GB ~$622; 1TB ~$820), so $620 is a reasonable cap."
+    },
+    "back_glass_research": {
+      "low": 20,
+      "mid": 28,
+      "high": 65,
+      "confidence": "low",
+      "sample_size": 0,
+      "source": "estimated_from_related_models",
+      "updated_at": "2026-05-24",
+      "note": "No strong dedicated 15 Pro back-glass listing was found. Estimated from 15 Pro Max and 14 Pro data; verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 15": {
+    "resale_value": 580,
+    "risk_buffer": 85,
+    "min_profit": 100,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Some color-specific back glass/charging values were rounded to practical lowest visible values. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 23.9,
+      "screen_safe": 77.55,
+      "screen_premium": 88,
+      "battery": 9.95,
+      "charging_port": 31,
+      "back_glass": 25,
+      "camera_lens": 6.08
+    },
+    "resale": {
+      "low": 330,
+      "mid": 441,
+      "high": 549,
+      "confidence": "manual_sold_comps",
+      "sample_size": 113,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Derived from Swappa: starting price ~$324 and 128GB unlocked average ~$441. The high end corresponds to the 512GB average (~$549)."
+    },
+    "back_glass_research": {
+      "low": 17,
+      "mid": 25,
+      "high": 49,
+      "confidence": "low",
+      "sample_size": 0,
+      "source": "estimated_from_related_models",
+      "updated_at": "2026-05-24",
+      "note": "Estimated from 14-series/base-model back-glass pricing due to limited clear 15 listings; verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 14 Pro Max": {
+    "resale_value": 690,
+    "risk_buffer": 90,
+    "min_profit": 100,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From a very compressed InjuredGadgets screenshot; values are approximate. Show 'parts not accurate' until manually verified. Back glass price updated from eBay active listing research.",
+    "parts": {
+      "screen_budget": 24,
+      "screen_safe": 50,
+      "screen_premium": 90,
+      "battery": 13,
+      "charging_port": 17,
+      "back_glass": 30,
+      "camera_lens": 6
+    },
+    "resale": {
+      "low": 374,
+      "mid": 503,
+      "high": 640,
+      "confidence": "manual_sold_comps",
+      "sample_size": 68,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa listings indicate starting price $374 and unlocked 128GB average $503. High end uses higher storage averages (512GB ~$598; 1TB ~$642)."
+    },
+    "back_glass_research": {
+      "low": 21.99,
+      "mid": 30,
+      "high": 51.57,
+      "confidence": "medium",
+      "sample_size": 3,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Back-glass kit/rear panel around $21.99, related 14 Pro component listing around $31.49, and housing assembly proxy around $51.57.",
+      "examples": []
+    }
+  },
+  "iPhone 14 Pro": {
+    "resale_value": 610,
+    "risk_buffer": 85,
+    "min_profit": 90,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated from iPhone 14 Pro Max screenshot; show 'parts not accurate' in alerts. Back glass price updated from eBay active listing research.",
+    "parts": {
+      "screen_budget": 22,
+      "screen_safe": 45,
+      "screen_premium": 80,
+      "battery": 12,
+      "charging_port": 15,
+      "back_glass": 31,
+      "camera_lens": 6
+    },
+    "resale": {
+      "low": 320,
+      "mid": 437,
+      "high": 600,
+      "confidence": "manual_sold_comps",
+      "sample_size": 49,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa shows starting price $319 and 128GB unlocked average $437. High end reflects higher storage models (512GB averages $766 and 1TB ~ $587‑$678), so ~600 is a reasonable upper bound."
+    },
+    "back_glass_research": {
+      "low": 20,
+      "mid": 31.49,
+      "high": 51.57,
+      "confidence": "medium",
+      "sample_size": 2,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Clear 14 Pro back-glass listing around $31.49; high uses 14-series housing assembly proxy.",
+      "examples": []
+    }
+  },
+  "iPhone 14": {
+    "resale_value": 430,
+    "risk_buffer": 70,
+    "min_profit": 80,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Back glass uses visible rear cover/glass pricing, not screen protector/accessory pricing. Back glass price updated from eBay active listing research.",
+    "parts": {
+      "screen_budget": 24.31,
+      "screen_safe": 43.95,
+      "screen_premium": 75,
+      "battery": 14.99,
+      "charging_port": 14.49,
+      "back_glass": 25,
+      "camera_lens": 5.95
+    },
+    "resale": {
+      "low": 210,
+      "mid": 337,
+      "high": 388,
+      "confidence": "manual_sold_comps",
+      "sample_size": 115,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Based on Swappa sold prices: starting price ~$204 and unlocked 128GB average ~$337. High end uses the 512GB average of ~$388."
+    },
+    "back_glass_research": {
+      "low": 17,
+      "mid": 25,
+      "high": 49.99,
+      "confidence": "medium",
+      "sample_size": 3,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Low based on OEM-style base iPhone 14 back glass around $17; high around $49.99 for genuine/pulled style part.",
+      "examples": []
+    }
+  },
+  "iPhone 13 Pro Max": {
+    "resale_value": 540,
+    "risk_buffer": 80,
+    "min_profit": 85,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated upward from iPhone 13 Pro; show 'parts not accurate' in alerts. Back glass estimate added manually to reduce Needs Data noise; verify before purchase. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 30,
+      "screen_safe": 62,
+      "screen_premium": 110,
+      "battery": 14,
+      "charging_port": 9,
+      "back_glass": 27,
+      "camera_lens": 7
+    },
+    "resale": {
+      "low": 280,
+      "mid": 454,
+      "high": 560,
+      "confidence": "manual_sold_comps",
+      "sample_size": 52,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Swappa sold listings show starting price ~$282 and average price ~$504. Unlocked 128GB averages ~$454; high end comes from 512GB/1TB averages (~$533‑$557)."
+    },
+    "back_glass_research": {
+      "low": 14,
+      "mid": 27,
+      "high": 35,
+      "confidence": "low",
+      "sample_size": 1,
+      "source": "estimated_from_related_models",
+      "updated_at": "2026-05-24",
+      "note": "Dedicated 13 Pro Max data was scarce. Mid estimated from 13/13 Pro and related housing pricing; verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 13 Pro": {
+    "resale_value": 470,
+    "risk_buffer": 75,
+    "min_profit": 80,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Screen_safe uses lowest visible Soft OLED option. Back glass estimate added manually to reduce Needs Data noise; verify before purchase. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 26,
+      "screen_safe": 52,
+      "screen_premium": 96,
+      "battery": 14.9,
+      "charging_port": 6.75,
+      "back_glass": 20,
+      "camera_lens": 5
+    },
+    "resale": {
+      "low": 260,
+      "mid": 390,
+      "high": 589,
+      "confidence": "manual_sold_comps",
+      "sample_size": 54,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Estimated from Swappa data: start price $256 and unlocked 128GB average about $390. High end reflects the highest average for larger storage (1TB ~ $589)."
+    },
+    "back_glass_research": {
+      "low": 14,
+      "mid": 20.25,
+      "high": 30,
+      "confidence": "low",
+      "sample_size": 2,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "One 13 Pro back-glass listing around $20.25; cheaper generic 13/13 Mini listing used as low reference. Verify before purchase.",
+      "examples": []
+    }
+  },
+  "iPhone 13": {
+    "resale_value": 330,
+    "risk_buffer": 65,
+    "min_profit": 75,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Camera lens is only set where a repair lens/ring price was visible; screen protectors ignored. Back glass estimate added manually to reduce Needs Data noise; verify before purchase. Back glass price is based on low-confidence eBay active listing research; verify before purchase.",
+    "parts": {
+      "screen_budget": 29.95,
+      "screen_safe": 46.8,
+      "screen_premium": 69,
+      "battery": 10.95,
+      "charging_port": 6.95,
+      "back_glass": 20,
+      "camera_lens": 1.95
+    },
+    "resale": {
+      "low": 180,
+      "mid": 280,
+      "high": 460,
+      "confidence": "manual_sold_comps",
+      "sample_size": 224,
+      "condition": "used_good_after_repair",
+      "storage_baseline": "128GB",
+      "updated_at": "2026-05-23",
+      "note": "Used Swappa sold prices for 128GB unlocked iPhone 13 (average around $280) as the mid range and the table’s higher 512GB average ($460) as the high end. Excluded cracked, parts‑only or locked devices."
+    },
+    "back_glass_research": {
+      "low": 13.99,
+      "mid": 20,
+      "high": 30,
+      "confidence": "low",
+      "sample_size": 1,
+      "source": "ebay_active_listings",
+      "updated_at": "2026-05-24",
+      "note": "Only clear base 13 listing was a big-hole back glass around $13.99; mid/high estimated from 13 Pro and related housing pricing.",
+      "examples": []
+    }
+  }
+}

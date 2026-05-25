@@ -1,0 +1,274 @@
+{
+  "default": {
+    "resale_value": 250,
+    "risk_buffer": 60,
+    "min_profit": 75,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "fallback",
+    "parts_pricing_note": "Default fallback only. Actual model-specific prices are not verified.",
+    "parts": {
+      "screen_budget": 45,
+      "screen_safe": 80,
+      "screen_premium": 130,
+      "battery": 45,
+      "charging_port": 55,
+      "back_glass": 75,
+      "camera_lens": 20
+    }
+  },
+  "iPhone 17 Pro Max": {
+    "resale_value": 0,
+    "risk_buffer": 120,
+    "min_profit": 140,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated from iPhone 17 Pro / one partial 17 Pro Max page; show 'parts not accurate' in alerts.",
+    "parts": {
+      "screen_budget": 70,
+      "screen_safe": 143,
+      "screen_premium": 235,
+      "battery": 70,
+      "charging_port": 65,
+      "back_glass": null,
+      "camera_lens": 8
+    }
+  },
+  "iPhone 17 Pro": {
+    "resale_value": 0,
+    "risk_buffer": 110,
+    "min_profit": 130,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Some lower-page parts not captured; missing values remain null.",
+    "parts": {
+      "screen_budget": 54.4,
+      "screen_safe": 103.0,
+      "screen_premium": 322.48,
+      "battery": 58.99,
+      "charging_port": 49.59,
+      "back_glass": null,
+      "camera_lens": 6.66
+    }
+  },
+  "iPhone 17": {
+    "resale_value": 0,
+    "risk_buffer": 95,
+    "min_profit": 110,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Camera-lens protector was ignored because it is not the repair lens itself.",
+    "parts": {
+      "screen_budget": 50.42,
+      "screen_safe": 95.4,
+      "screen_premium": 299.0,
+      "battery": 48.19,
+      "charging_port": null,
+      "back_glass": null,
+      "camera_lens": null
+    }
+  },
+  "iPhone 16 Pro Max": {
+    "resale_value": 0,
+    "risk_buffer": 105,
+    "min_profit": 120,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Screen_safe uses the 120Hz Soft OLED option; lower Soft OLED exists but may not preserve ProMotion expectations.",
+    "parts": {
+      "screen_budget": 32.5,
+      "screen_safe": 122.3,
+      "screen_premium": 175.0,
+      "battery": 45.0,
+      "charging_port": null,
+      "back_glass": null,
+      "camera_lens": null
+    }
+  },
+  "iPhone 16 Pro": {
+    "resale_value": 0,
+    "risk_buffer": 95,
+    "min_profit": 110,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Screen_safe uses 120Hz Soft OLED option.",
+    "parts": {
+      "screen_budget": 36.75,
+      "screen_safe": 91.25,
+      "screen_premium": 226.0,
+      "battery": null,
+      "charging_port": null,
+      "back_glass": null,
+      "camera_lens": null
+    }
+  },
+  "iPhone 16": {
+    "resale_value": 0,
+    "risk_buffer": 85,
+    "min_profit": 100,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated downward from iPhone 16 Pro screenshot; show 'parts not accurate' in alerts.",
+    "parts": {
+      "screen_budget": 35,
+      "screen_safe": 85,
+      "screen_premium": 190,
+      "battery": 45,
+      "charging_port": 35,
+      "back_glass": null,
+      "camera_lens": null
+    }
+  },
+  "iPhone 15 Pro Max": {
+    "resale_value": 850,
+    "risk_buffer": 100,
+    "min_profit": 120,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated upward from iPhone 15 Pro; show 'parts not accurate' in alerts.",
+    "parts": {
+      "screen_budget": 35,
+      "screen_safe": 95,
+      "screen_premium": 220,
+      "battery": 22,
+      "charging_port": 32,
+      "back_glass": 40,
+      "camera_lens": null
+    }
+  },
+  "iPhone 15 Pro": {
+    "resale_value": 760,
+    "risk_buffer": 95,
+    "min_profit": 110,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_and_page",
+    "parts_pricing_note": "From InjuredGadgets screenshot/page. Screen_safe is Soft OLED 120Hz QRT. Back glass uses lowest non-accessory back glass assembly.",
+    "parts": {
+      "screen_budget": 23.75,
+      "screen_safe": 74.95,
+      "screen_premium": 135.0,
+      "battery": 18.95,
+      "charging_port": 22.0,
+      "back_glass": 28.27,
+      "camera_lens": null
+    }
+  },
+  "iPhone 15": {
+    "resale_value": 580,
+    "risk_buffer": 85,
+    "min_profit": 100,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Some color-specific back glass/charging values were rounded to practical lowest visible values.",
+    "parts": {
+      "screen_budget": 23.9,
+      "screen_safe": 77.55,
+      "screen_premium": 88.0,
+      "battery": 9.95,
+      "charging_port": 31.0,
+      "back_glass": 28.88,
+      "camera_lens": 6.08
+    }
+  },
+  "iPhone 14 Pro Max": {
+    "resale_value": 690,
+    "risk_buffer": 90,
+    "min_profit": 100,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot_low_confidence",
+    "parts_pricing_note": "From a very compressed InjuredGadgets screenshot; values are approximate. Show 'parts not accurate' until manually verified.",
+    "parts": {
+      "screen_budget": 24.0,
+      "screen_safe": 50.0,
+      "screen_premium": 90.0,
+      "battery": 13.0,
+      "charging_port": 17.0,
+      "back_glass": 35.0,
+      "camera_lens": 6.0
+    }
+  },
+  "iPhone 14 Pro": {
+    "resale_value": 610,
+    "risk_buffer": 85,
+    "min_profit": 90,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated from iPhone 14 Pro Max screenshot; show 'parts not accurate' in alerts.",
+    "parts": {
+      "screen_budget": 22,
+      "screen_safe": 45,
+      "screen_premium": 80,
+      "battery": 12,
+      "charging_port": 15,
+      "back_glass": 30,
+      "camera_lens": 6
+    }
+  },
+  "iPhone 14": {
+    "resale_value": 430,
+    "risk_buffer": 70,
+    "min_profit": 80,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Back glass uses visible rear cover/glass pricing, not screen protector/accessory pricing.",
+    "parts": {
+      "screen_budget": 24.31,
+      "screen_safe": 43.95,
+      "screen_premium": 75.0,
+      "battery": 14.99,
+      "charging_port": 14.49,
+      "back_glass": 17.0,
+      "camera_lens": 5.95
+    }
+  },
+  "iPhone 13 Pro Max": {
+    "resale_value": 540,
+    "risk_buffer": 80,
+    "min_profit": 85,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "estimated",
+    "parts_pricing_note": "Actual prices not on file. Estimated upward from iPhone 13 Pro; show 'parts not accurate' in alerts.",
+    "parts": {
+      "screen_budget": 30,
+      "screen_safe": 62,
+      "screen_premium": 110,
+      "battery": 14,
+      "charging_port": 9,
+      "back_glass": null,
+      "camera_lens": 7
+    }
+  },
+  "iPhone 13 Pro": {
+    "resale_value": 470,
+    "risk_buffer": 75,
+    "min_profit": 80,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Screen_safe uses lowest visible Soft OLED option.",
+    "parts": {
+      "screen_budget": 26.0,
+      "screen_safe": 52.0,
+      "screen_premium": 96.0,
+      "battery": 10.95,
+      "charging_port": 6.75,
+      "back_glass": null,
+      "camera_lens": 5.0
+    }
+  },
+  "iPhone 13": {
+    "resale_value": 330,
+    "risk_buffer": 65,
+    "min_profit": 75,
+    "manual_review_allowed": true,
+    "parts_pricing_status": "verified_screenshot",
+    "parts_pricing_note": "From InjuredGadgets screenshot. Camera lens is only set where a repair lens/ring price was visible; screen protectors ignored.",
+    "parts": {
+      "screen_budget": 29.95,
+      "screen_safe": 46.8,
+      "screen_premium": 69.0,
+      "battery": 10.95,
+      "charging_port": 6.95,
+      "back_glass": null,
+      "camera_lens": 1.95
+    }
+  }
+}

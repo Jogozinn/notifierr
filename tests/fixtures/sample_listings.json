@@ -1,0 +1,145 @@
+[
+  {
+    "name": "cracked_screen_powers_on_unlocked",
+    "listing": {
+      "item_id": "sample-cracked-screen",
+      "title": "Apple iPhone 14 Pro cracked screen powers on unlocked clean IMEI",
+      "price": 205,
+      "shipping": 15,
+      "total_cost": 220,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-cracked-screen",
+      "raw_description": "Screen is cracked. Phone turns on. Face ID works."
+    }
+  },
+  {
+    "name": "bad_battery_only",
+    "listing": {
+      "item_id": "sample-battery",
+      "title": "Apple iPhone 14 Pro bad battery only unlocked",
+      "price": 230,
+      "shipping": 10,
+      "total_cost": 240,
+      "condition": "Used",
+      "item_url": "https://www.ebay.com/itm/sample-battery",
+      "raw_description": "Battery service message. Powers on. Clean IMEI."
+    }
+  },
+  {
+    "name": "back_glass_cracked",
+    "listing": {
+      "item_id": "sample-back-glass",
+      "title": "iPhone 13 Pro cracked back glass carrier unlocked",
+      "price": 175,
+      "shipping": 12,
+      "total_cost": 187,
+      "condition": "Used",
+      "item_url": "https://www.ebay.com/itm/sample-back-glass",
+      "raw_description": "Back glass cracked only. Phone powers on and Face ID works."
+    }
+  },
+  {
+    "name": "water_damaged",
+    "listing": {
+      "item_id": "sample-water",
+      "title": "iPhone 14 Pro water damaged cracked screen",
+      "price": 80,
+      "shipping": 10,
+      "total_cost": 90,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-water",
+      "raw_description": "Liquid damage. Powers on sometimes."
+    }
+  },
+  {
+    "name": "icloud_locked",
+    "listing": {
+      "item_id": "sample-icloud",
+      "title": "iPhone 14 Pro cracked screen iCloud locked",
+      "price": 100,
+      "shipping": 0,
+      "total_cost": 100,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-icloud",
+      "raw_description": "Activation locked. Screen cracked."
+    }
+  },
+  {
+    "name": "no_service_baseband",
+    "listing": {
+      "item_id": "sample-baseband",
+      "title": "iPhone 13 Pro no service baseband issue",
+      "price": 120,
+      "shipping": 10,
+      "total_cost": 130,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-baseband",
+      "raw_description": "No service. Baseband problem."
+    }
+  },
+  {
+    "name": "bent_frame",
+    "listing": {
+      "item_id": "sample-bent-frame",
+      "title": "iPhone 13 Pro bent frame cracked screen",
+      "price": 100,
+      "shipping": 8,
+      "total_cost": 108,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-bent-frame",
+      "raw_description": "Frame damaged from drop."
+    }
+  },
+  {
+    "name": "face_id_not_working",
+    "listing": {
+      "item_id": "sample-face-id",
+      "title": "iPhone 14 Pro cracked screen Face ID not working",
+      "price": 180,
+      "shipping": 10,
+      "total_cost": 190,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-face-id",
+      "raw_description": "Powers on but Face ID does not work."
+    }
+  },
+  {
+    "name": "no_power",
+    "listing": {
+      "item_id": "sample-no-power",
+      "title": "iPhone 14 Pro no power",
+      "price": 130,
+      "shipping": 10,
+      "total_cost": 140,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-no-power",
+      "raw_description": "Does not turn on."
+    }
+  },
+  {
+    "name": "vague_for_parts",
+    "listing": {
+      "item_id": "sample-vague",
+      "title": "iPhone 13 Pro for parts read description",
+      "price": 100,
+      "shipping": 10,
+      "total_cost": 110,
+      "condition": "For parts or not working",
+      "item_url": "https://www.ebay.com/itm/sample-vague",
+      "raw_description": "As-is, untested, unknown issue."
+    }
+  },
+  {
+    "name": "clean_high_price_low_profit",
+    "listing": {
+      "item_id": "sample-low-profit",
+      "title": "iPhone 14 Pro unlocked clean IMEI powers on cracked screen",
+      "price": 340,
+      "shipping": 15,
+      "total_cost": 355,
+      "condition": "Used",
+      "item_url": "https://www.ebay.com/itm/sample-low-profit",
+      "raw_description": "Only cracked screen. Face ID works."
+    }
+  }
+]
