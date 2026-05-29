@@ -3,6 +3,7 @@ const QUEUE_CARDS = [
   { key: "priority_review", label: "Priority Review" },
   { key: "needs_data", label: "Needs Data" },
   { key: "watched", label: "Watched" },
+  { key: "promoted", label: "Promoted" },
   { key: "ignored", label: "Ignored" },
   { key: "rejected", label: "Rejected" },
   { key: "all", label: "All" },
@@ -53,6 +54,9 @@ function formatCount(stats, counts, key) {
   }
   if (key === "needs_data") {
     return stats.needs_data ?? 0;
+  }
+  if (key === "promoted") {
+    return stats.promoted ?? stats.by_user_status?.promoted ?? 0;
   }
   if (key === "watched" || key === "ignored") {
     return stats.by_user_status?.[key] ?? 0;

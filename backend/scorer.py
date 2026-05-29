@@ -18,6 +18,9 @@ HARD_REJECT_PATTERNS = {
     "baseband": r"\bbaseband\b",
     "logic_board": r"\blogic\s+board\b",
     "motherboard": r"\bmother\s*board\b",
+    "board_damage": r"\bboard\s+damage(?:d)?\b",
+    "motherboard_issue": r"\bmother\s*board\s+(?:issue|problem|damage(?:d)?)\b",
+    "logic_issue": r"\blogic\s+(?:issue|problem)\b",
     "bent_frame": r"\bbent\s+frame\b",
     "major_frame_damage": r"\bmajor\s+frame\s+damage\b|\bframe\s+(?:is\s+)?(?:badly\s+)?damaged\b",
     "no_power": r"\bno\s+power\b|\bdoes\s+not\s+power\s+on\b|\bdoesn'?t\s+power\s+on\b|\bwon'?t\s+power\s+on\b|\bnot\s+powering\s+on\b",
@@ -75,6 +78,14 @@ RISK_PATTERNS = {
     "unknown_issue": r"\bunknown\s+(?:issue|problem|condition)\b",
     "multiple_issues": r"\bmultiple\s+issues\b",
     "ic_issue": r"\b(?:no\s+ic|bad\s+ic|ic\s+(?:issue|problem|bad))\b",
+    "no_ic_read": r"\bno\s+ic\s+read\b",
+    "ic_read": r"\bic\s+read\b",
+    "not_original_owner": r"\bnot\s+(?:the\s+)?original\s+owner\b|\bno\s+original\s+owner\b",
+    "unknown_icloud": r"\bunknown\s+icloud\b|\bcannot\s+verify\s+icloud\b",
+    "face_id_unknown": r"\bface\s*id\s+unknown\b",
+    "touch_not_working": r"\btouch\s+(?:not\s+working|does\s+not\s+work|doesn'?t\s+work)\b",
+    "display_not_original": r"\bdisplay\s+(?:is\s+)?not\s+original\b|\bnon[-\s]?original\s+display\b",
+    "parts_swapped": r"\bparts?\s+swapped\b",
 }
 
 ISSUE_COST_KEYS = {
@@ -88,7 +99,7 @@ ISSUE_COST_KEYS = {
 }
 
 VERIFIED_PART_STATUSES = {"verified_screenshot", "verified_screenshot_and_page"}
-UNVERIFIED_PART_STATUSES = {"estimated", "verified_screenshot_low_confidence", "fallback"}
+UNVERIFIED_PART_STATUSES = {"estimated", "verified_screenshot_low_confidence", "fallback", "manual_part_update"}
 STRICT_MARGIN_PART_STATUSES = {"estimated", "verified_screenshot_low_confidence"}
 
 VERIFIED_PARTS_LABEL = "Verified parts"
@@ -116,14 +127,28 @@ ACTUAL_REPAIR_ISSUE_FLAGS = {
 
 OLD_MODEL_IGNORED_FLAG = "old_model_ignored"
 
-BLOCKING_RISK_FLAGS = {"as_is", "untested", "unknown_issue", "multiple_issues", "ic_issue"}
+BLOCKING_RISK_FLAGS = {
+    "untested",
+    "unknown_issue",
+    "multiple_issues",
+    "ic_issue",
+    "no_ic_read",
+    "ic_read",
+    "not_original_owner",
+    "unknown_icloud",
+    "face_id_unknown",
+    "touch_not_working",
+    "display_not_original",
+    "parts_swapped",
+}
 
 GENERIC_REPAIR_ISSUE_PATTERN = re.compile(
     r"\b(?:broken|for\s+repair|parts\s+only|for\s+parts|read\s+description|parts\s*/\s*repair)\b",
     re.IGNORECASE,
 )
 
-STORAGE_PATTERN = re.compile(r"\b(?:64|128|256|512)\s*gb\b|\b1\s*tb\b", re.IGNORECASE)
+STORAGE_PATTERN = re.compile(r"\b(?:(64|128|256|512)\s*gb|(1)\s*tb)\b", re.IGNORECASE)
+STORAGE_ORDER = ("64GB", "128GB", "256GB", "512GB", "1TB")
 IPHONE_TITLE_PATTERN = re.compile(r"\b(?:apple\s+)?iphone(?:\s+\d{2,}|(?:\s+(?:se|xr|xs|x|pro|max|plus|mini)){0,4})\b", re.IGNORECASE)
 CARRIER_PATTERN = re.compile(r"\b(?:unlocked|factory\s+unlocked|carrier\s+unlocked|verizon|at&t|att|tmobile|t-mobile|sprint|boost|cricket|metro)\b", re.IGNORECASE)
 WHOLE_PHONE_CATEGORY_PATTERN = re.compile(r"cell\s+phones?\s*&\s*smartphones?", re.IGNORECASE)
@@ -194,6 +219,20 @@ class ScoreResult:
     resale_confidence: str = ""
     resale_sample_size: int = 0
     resale_note: str = ""
+    resale_source: str = "missing"
+    resale_market_source: str = "missing"
+    resale_condition_used: str = ""
+    resale_storage_used: str | None = None
+    storage_resale_warning: str = ""
+    mint_resale_low: float = 0.0
+    mint_resale_mid: float = 0.0
+    mint_resale_high: float = 0.0
+    mint_profit_low: float = 0.0
+    mint_profit_mid: float = 0.0
+    mint_profit_high: float = 0.0
+    storage_capacity: str | None = None
+    storage_confidence: str = ""
+    storage_source: str = ""
     parts_pricing_status: str = "fallback"
     parts_pricing_note: str = ""
     parts_pricing_label: str = PARTS_ESTIMATE_NOT_VERIFIED_LABEL
@@ -228,6 +267,20 @@ class ScoreResult:
             "resale_confidence": self.resale_confidence,
             "resale_sample_size": self.resale_sample_size,
             "resale_note": self.resale_note,
+            "resale_source": self.resale_source,
+            "resale_market_source": self.resale_market_source,
+            "resale_condition_used": self.resale_condition_used,
+            "resale_storage_used": self.resale_storage_used,
+            "storage_resale_warning": self.storage_resale_warning,
+            "mint_resale_low": self.mint_resale_low,
+            "mint_resale_mid": self.mint_resale_mid,
+            "mint_resale_high": self.mint_resale_high,
+            "mint_profit_low": self.mint_profit_low,
+            "mint_profit_mid": self.mint_profit_mid,
+            "mint_profit_high": self.mint_profit_high,
+            "storage_capacity": self.storage_capacity,
+            "storage_confidence": self.storage_confidence,
+            "storage_source": self.storage_source,
             "estimated_parts_cost": self.estimated_parts_cost,
             "risk_buffer": self.risk_buffer,
             "parts_pricing_status": self.parts_pricing_status,
@@ -254,10 +307,15 @@ def score_listing(
     listing: dict[str, Any],
     repair_values: dict[str, Any],
     *,
+    resale_research: dict[str, Any] | None = None,
     scoring_rules: dict[str, Any] | None = None,
     min_score_to_alert: float | None = None,
     min_profit_to_alert: float | None = None,
     risky_score_range: tuple[float, float] | list[float] | None = None,
+    forced_model: str | None = None,
+    forced_storage_capacity: str | None = None,
+    forced_issue_type: str | None = None,
+    forced_part_cost: float | None = None,
     score_threshold: float = 70.0,
     profit_threshold: float = 75.0,
 ) -> ScoreResult:
@@ -272,6 +330,9 @@ def score_listing(
         hard_flags = [flag for flag in hard_flags if flag != "icloud_locked"]
     positive_flags = _match_flags(text, _patterns_from_rules(scoring_rules, "positive_keywords", POSITIVE_PATTERNS))
     risk_flags = _match_flags(text, _patterns_from_rules(scoring_rules, "risk_keywords", RISK_PATTERNS))
+    forced_issue_flag = _issue_flag_from_override(forced_issue_type)
+    if forced_issue_flag:
+        positive_flags = _dedupe([*positive_flags, forced_issue_flag])
     proof_flags = _proof_flags(text, positive_flags)
     if "no_power" in hard_flags or "does_not_turn_on" in hard_flags:
         positive_flags = [flag for flag in positive_flags if flag != "powers_on"]
@@ -280,16 +341,30 @@ def score_listing(
     hard_flags = _dedupe([*hard_flags, *classification["suppress_flags"]])
     risk_flags = _dedupe([*risk_flags, *classification["risk_flags"]])
 
-    model = "unknown" if classification["suppress_flags"] else detect_model(text, repair_values)
+    model = (
+        str(forced_model or "").strip()
+        or ("unknown" if classification["suppress_flags"] else detect_model(text, repair_values))
+    )
     suspicious_spec_flags = _suspicious_spec_flags(text, model)
     if suspicious_spec_flags:
         classification["flags"] = _dedupe([*classification["flags"], *suspicious_spec_flags])
     if _is_old_ignored_model(text, model):
         hard_flags = _dedupe([*hard_flags, OLD_MODEL_IGNORED_FLAG])
     estimate = _model_estimate(model, repair_values)
+    storage = detect_storage(listing, forced_storage_capacity=forced_storage_capacity)
     total_cost = float(listing.get("total_cost") or 0)
-    estimated_parts_cost, parts_cost_available = _estimate_parts_cost(estimate, positive_flags)
-    resale = _resale_estimate(estimate)
+    estimated_parts_cost, parts_cost_available = _estimate_parts_cost(
+        estimate,
+        positive_flags,
+        forced_issue_type=forced_issue_type,
+        forced_part_cost=forced_part_cost,
+    )
+    resale = _resale_estimate(
+        estimate,
+        storage["storage_capacity"],
+        model=model,
+        resale_research=resale_research,
+    )
     resale_value = resale["mid"]
     resale_value_available = resale_value > 0
     model_has_pricing = model in repair_values
@@ -313,6 +388,13 @@ def score_listing(
         risk_buffer=risk_buffer,
         available=estimated_profit_available,
     )
+    mint_profit_low, mint_profit_mid, mint_profit_high = _profit_range(
+        resale["mint"],
+        total_cost=total_cost,
+        estimated_parts_cost=estimated_parts_cost,
+        risk_buffer=risk_buffer,
+        available=estimated_profit_available and float(resale["mint"].get("mid") or 0) > 0,
+    )
     estimated_profit = profit_mid
     parts_pricing_status = str(estimate.get("parts_pricing_status") or "fallback")
     parts_pricing_note = str(estimate.get("parts_pricing_note") or "")
@@ -332,6 +414,8 @@ def score_listing(
         min_profit=effective_min_profit,
         parts_pricing_status=parts_pricing_status,
     )
+    if not alert_eligible and estimated_profit_available and mint_profit_high >= effective_min_profit:
+        alert_ineligible_reasons = _dedupe([*alert_ineligible_reasons, "Profit depends on mint resale"])
     verification_eligible, verification_reasons = _verification_risk_eligibility(
         total_cost=total_cost,
         resale=resale,
@@ -349,7 +433,16 @@ def score_listing(
     else:
         score = 45.0
         score += min(len(positive_flags) * 12.0, 48.0)
-        score -= min(len(risk_flags) * 10.0, 30.0)
+        penalty_risk_flags = _risk_flags_for_score(
+            risk_flags,
+            proof_flags=proof_flags,
+            hard_flags=hard_flags,
+            classification=classification,
+            estimated_profit_available=estimated_profit_available,
+            profit_mid=profit_mid,
+            min_profit=effective_min_profit,
+        )
+        score -= min(len(penalty_risk_flags) * 10.0, 30.0)
         if model != "unknown":
             score += 8.0
         if classification["whole_phone_confidence_passed"]:
@@ -391,6 +484,7 @@ def score_listing(
         parts_cost_available=parts_cost_available,
         estimated_profit_available=estimated_profit_available,
         alert_ineligible_reasons=alert_ineligible_reasons,
+        storage_resale_warning=resale["storage_warning"],
     )
 
     return ScoreResult(
@@ -408,6 +502,20 @@ def score_listing(
         resale_confidence=resale["confidence"],
         resale_sample_size=resale["sample_size"],
         resale_note=resale["note"],
+        resale_source=resale["source"],
+        resale_market_source=resale["market_source"],
+        resale_condition_used=resale["condition_used"],
+        resale_storage_used=resale["storage_used"],
+        storage_resale_warning=resale["storage_warning"],
+        mint_resale_low=round(resale["mint"]["low"], 2),
+        mint_resale_mid=round(resale["mint"]["mid"], 2),
+        mint_resale_high=round(resale["mint"]["high"], 2),
+        mint_profit_low=round(mint_profit_low, 2),
+        mint_profit_mid=round(mint_profit_mid, 2),
+        mint_profit_high=round(mint_profit_high, 2),
+        storage_capacity=storage["storage_capacity"],
+        storage_confidence=storage["storage_confidence"],
+        storage_source=storage["storage_source"],
         estimated_parts_cost=round(estimated_parts_cost, 2),
         risk_buffer=round(risk_buffer, 2),
         parts_pricing_status=parts_pricing_status,
@@ -503,6 +611,37 @@ def detect_model(text: str, repair_values: dict[str, Any]) -> str:
     return "unknown"
 
 
+def detect_storage(listing: dict[str, Any], *, forced_storage_capacity: str | None = None) -> dict[str, str | None]:
+    if forced_storage_capacity:
+        return {
+            "storage_capacity": str(forced_storage_capacity).strip(),
+            "storage_confidence": "manual_override",
+            "storage_source": "user_item_correction",
+        }
+    title_match = _storage_from_text(str(listing.get("title") or ""))
+    if title_match:
+        return {
+            "storage_capacity": title_match,
+            "storage_confidence": "high",
+            "storage_source": "title",
+        }
+
+    aspect_text = _storage_aspect_text(listing)
+    aspect_match = _storage_from_text(aspect_text)
+    if aspect_match:
+        return {
+            "storage_capacity": aspect_match,
+            "storage_confidence": "medium",
+            "storage_source": "item_aspects",
+        }
+
+    return {
+        "storage_capacity": None,
+        "storage_confidence": "",
+        "storage_source": "",
+    }
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -536,8 +675,48 @@ def _listing_category_text(listing: dict[str, Any]) -> str:
     return _normalize(" ".join(str(value) for value in category_data if value))
 
 
+def _storage_aspect_text(listing: dict[str, Any]) -> str:
+    raw_json = listing.get("raw_json") or {}
+    values = []
+    if isinstance(raw_json, dict):
+        values.extend(_collect_storageish_values(raw_json))
+    for key in ("aspects", "localizedAspects", "itemSpecifics"):
+        value = listing.get(key)
+        if value:
+            values.extend(_collect_storageish_values(value))
+    return " ".join(str(value) for value in values if value)
+
+
+def _collect_storageish_values(value: Any, parent_key: str = "") -> list[str]:
+    values: list[str] = []
+    storage_key = bool(re.search(r"\b(?:storage|capacity|memory)\b", parent_key, re.IGNORECASE))
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            values.extend(_collect_storageish_values(nested, str(key)))
+        return values
+    if isinstance(value, list):
+        for nested in value:
+            values.extend(_collect_storageish_values(nested, parent_key))
+        return values
+    if value is None:
+        return values
+    text = str(value)
+    if storage_key or _storage_from_text(text):
+        values.append(text)
+    return values
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def _storage_from_text(text: str) -> str | None:
+    match = STORAGE_PATTERN.search(text)
+    if not match:
+        return None
+    if match.group(2):
+        return "1TB"
+    return f"{match.group(1)}GB"
 
 
 def _match_flags(text: str, patterns: dict[str, str]) -> list[str]:
@@ -638,8 +817,63 @@ def _model_estimate(model: str, repair_values: dict[str, Any]) -> dict[str, Any]
     return repair_values.get("default", {})
 
 
-def _resale_estimate(estimate: dict[str, Any]) -> dict[str, Any]:
+def _resale_estimate(
+    estimate: dict[str, Any],
+    storage_capacity: str | None = None,
+    *,
+    model: str = "unknown",
+    resale_research: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    research_entry = _model_research_entry(resale_research or {}, model)
+    research_storage = research_entry.get("resale_by_storage") if isinstance(research_entry.get("resale_by_storage"), dict) else {}
+    storage_warning = ""
+    if research_storage and storage_capacity:
+        storage_used = _storage_range_key(research_storage, storage_capacity)
+        if storage_used:
+            if storage_used != storage_capacity:
+                storage_warning = f"No exact {storage_capacity} resale range; using closest lower {storage_used}"
+            return _resale_range_from_mapping(
+                research_storage.get(storage_used) or {},
+                source="storage_specific",
+                market_source="resale_research",
+                storage_used=storage_used,
+                storage_warning=storage_warning,
+            )
+
+    research_resale = research_entry.get("resale") if isinstance(research_entry.get("resale"), dict) else {}
+    if research_resale:
+        if research_storage and not storage_capacity:
+            storage_warning = "Storage unknown - model-level resale used"
+        elif research_storage and storage_capacity:
+            storage_warning = f"No storage-specific resale range for {storage_capacity}; model-level resale used"
+        return _resale_range_from_mapping(
+            research_resale,
+            source="model_range",
+            market_source="resale_research",
+            storage_used=None,
+            storage_warning=storage_warning,
+        )
+
+    storage_ranges = estimate.get("resale_by_storage") if isinstance(estimate.get("resale_by_storage"), dict) else {}
+    storage_warning = ""
+    if storage_ranges and storage_capacity:
+        storage_used = _storage_range_key(storage_ranges, storage_capacity)
+        if storage_used:
+            if storage_used != storage_capacity:
+                storage_warning = f"No exact {storage_capacity} resale range; using closest lower {storage_used}"
+            return _resale_range_from_mapping(
+                storage_ranges.get(storage_used) or {},
+                source="storage_specific",
+                market_source="repair_values",
+                storage_used=storage_used,
+                storage_warning=storage_warning,
+            )
+
     resale = estimate.get("resale") if isinstance(estimate.get("resale"), dict) else {}
+    if storage_ranges and not storage_capacity and resale:
+        storage_warning = "Storage unknown - model-level resale used"
+    elif storage_ranges and storage_capacity and resale:
+        storage_warning = f"No storage-specific resale range for {storage_capacity}; model-level resale used"
     fallback_mid = _float_or_none(estimate.get("resale_value"))
     mid = _float_or_none(resale.get("mid"))
     if mid is None:
@@ -650,6 +884,12 @@ def _resale_estimate(estimate: dict[str, Any]) -> dict[str, Any]:
         low = mid
     if high is None:
         high = mid
+    if mid <= 0:
+        source = "missing"
+    elif resale:
+        source = "model_range"
+    else:
+        source = "legacy_resale_value"
     return {
         "low": low,
         "mid": mid,
@@ -657,6 +897,12 @@ def _resale_estimate(estimate: dict[str, Any]) -> dict[str, Any]:
         "confidence": str(resale.get("confidence") or ""),
         "sample_size": int(resale.get("sample_size") or 0),
         "note": str(resale.get("note") or ""),
+        "source": source,
+        "market_source": "repair_values" if source == "model_range" else "legacy_resale_value" if source == "legacy_resale_value" else "missing",
+        "condition_used": "Good" if source != "missing" else "",
+        "mint": _empty_range(),
+        "storage_used": None,
+        "storage_warning": storage_warning,
     }
 
 
@@ -668,7 +914,98 @@ def _empty_resale_estimate() -> dict[str, Any]:
         "confidence": "",
         "sample_size": 0,
         "note": "",
+        "source": "missing",
+        "market_source": "missing",
+        "condition_used": "",
+        "mint": _empty_range(),
+        "storage_used": None,
+        "storage_warning": "",
     }
+
+
+def _model_research_entry(resale_research: dict[str, Any], model: str) -> dict[str, Any]:
+    if not isinstance(resale_research, dict):
+        return {}
+    if model in resale_research and isinstance(resale_research[model], dict):
+        return resale_research[model]
+    models = resale_research.get("models")
+    if isinstance(models, dict) and isinstance(models.get(model), dict):
+        return models[model]
+    return {}
+
+
+def _storage_range_key(storage_ranges: dict[str, Any], storage_capacity: str) -> str | None:
+    normalized = {_normalize_storage_key(key): key for key in storage_ranges}
+    if storage_capacity in normalized:
+        return normalized[storage_capacity]
+    if storage_capacity not in STORAGE_ORDER:
+        return None
+    target_index = STORAGE_ORDER.index(storage_capacity)
+    for capacity in reversed(STORAGE_ORDER[:target_index]):
+        if capacity in normalized:
+            return normalized[capacity]
+    return None
+
+
+def _normalize_storage_key(value: Any) -> str:
+    return _storage_from_text(str(value)) or str(value).replace(" ", "").upper()
+
+
+def _resale_range_from_mapping(
+    resale: dict[str, Any],
+    *,
+    source: str,
+    market_source: str,
+    storage_used: str | None,
+    storage_warning: str,
+) -> dict[str, Any]:
+    good = resale.get("good") if isinstance(resale.get("good"), dict) else resale
+    mint = resale.get("mint") if isinstance(resale.get("mint"), dict) else {}
+    mid = _float_or_none(good.get("mid"))
+    fallback = _float_or_none(good.get("resale_value"))
+    if mid is None:
+        mid = fallback or 0.0
+    low = _float_or_none(good.get("low"))
+    high = _float_or_none(good.get("high"))
+    if low is None:
+        low = mid
+    if high is None:
+        high = mid
+    mint_range = _range_from_mapping(mint)
+    return {
+        "low": low,
+        "mid": mid,
+        "high": high,
+        "confidence": str(good.get("confidence") or resale.get("confidence") or ""),
+        "sample_size": int(good.get("sample_size") or resale.get("sample_size") or 0),
+        "note": str(good.get("note") or good.get("notes") or resale.get("note") or resale.get("notes") or ""),
+        "source": source if mid > 0 else "missing",
+        "market_source": market_source if mid > 0 else "missing",
+        "condition_used": "Good" if mid > 0 else "",
+        "mint": mint_range,
+        "storage_used": storage_used,
+        "storage_warning": storage_warning,
+    }
+
+
+def _range_from_mapping(value: dict[str, Any]) -> dict[str, float]:
+    if not isinstance(value, dict):
+        return _empty_range()
+    mid = _float_or_none(value.get("mid"))
+    fallback = _float_or_none(value.get("resale_value"))
+    if mid is None:
+        mid = fallback or 0.0
+    low = _float_or_none(value.get("low"))
+    high = _float_or_none(value.get("high"))
+    if low is None:
+        low = mid
+    if high is None:
+        high = mid
+    return {"low": low, "mid": mid, "high": high}
+
+
+def _empty_range() -> dict[str, float]:
+    return {"low": 0.0, "mid": 0.0, "high": 0.0}
 
 
 def _profit_range(
@@ -716,11 +1053,21 @@ def _is_old_ignored_model(text: str, model: str) -> bool:
     }
 
 
-def _estimate_parts_cost(estimate: dict[str, Any], positive_flags: list[str]) -> tuple[float, bool]:
+def _estimate_parts_cost(
+    estimate: dict[str, Any],
+    positive_flags: list[str],
+    *,
+    forced_issue_type: str | None = None,
+    forced_part_cost: float | None = None,
+) -> tuple[float, bool]:
+    if forced_part_cost is not None:
+        return round(float(forced_part_cost), 2), float(forced_part_cost) > 0
     issue_costs = []
     missing_required_cost = False
+    forced_flag = _issue_flag_from_override(forced_issue_type)
+    active_flags = [forced_flag] if forced_flag else list(positive_flags)
     for flag, cost_keys in ISSUE_COST_KEYS.items():
-        if flag not in positive_flags:
+        if flag not in active_flags:
             continue
         cost = _estimate_cost(estimate, cost_keys)
         if cost is None or cost <= 0:
@@ -738,6 +1085,29 @@ def _estimate_parts_cost(estimate: dict[str, Any], positive_flags: list[str]) ->
         return 0.0, True
     fallback = float(fallback)
     return fallback, fallback > 0
+
+
+def _issue_flag_from_override(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    mapping = {
+        "screen_budget": "cracked_screen",
+        "screen_safe": "cracked_screen",
+        "screen_premium": "cracked_screen",
+        "cracked_screen": "cracked_screen",
+        "screen_display_issue": "screen_display_issue",
+        "bad_oled": "bad_oled",
+        "battery": "bad_battery",
+        "bad_battery": "bad_battery",
+        "back_glass": "back_glass_cracked",
+        "back_glass_cracked": "back_glass_cracked",
+        "camera_lens": "camera_lens_cracked",
+        "camera_lens_cracked": "camera_lens_cracked",
+        "charging_port": "charging_port_issue",
+        "charging_port_issue": "charging_port_issue",
+    }
+    return mapping.get(normalized)
 
 
 def _estimate_cost(estimate: dict[str, Any], cost_keys: tuple[str, ...]) -> float | None:
@@ -787,6 +1157,7 @@ def _manual_review_reasons(
     parts_cost_available: bool,
     estimated_profit_available: bool,
     alert_ineligible_reasons: list[str] | None = None,
+    storage_resale_warning: str = "",
 ) -> list[str]:
     reasons = []
     reasons.extend(alert_ineligible_reasons or [])
@@ -816,6 +1187,20 @@ def _manual_review_reasons(
         reasons.append("Model unknown")
     if "read_description" in risk_flags:
         reasons.append("Read description listing")
+    if storage_resale_warning:
+        reasons.append(storage_resale_warning)
+    risk_reason_labels = {
+        "ic_issue": "IC issue risk",
+        "no_ic_read": "No IC READ",
+        "ic_read": "IC read mentioned",
+        "not_original_owner": "Not original owner",
+        "unknown_icloud": "Cannot verify iCloud",
+        "face_id_unknown": "Face ID unknown",
+        "touch_not_working": "Touch not working",
+        "display_not_original": "Display not original",
+        "parts_swapped": "Parts swapped",
+    }
+    reasons.extend(label for flag, label in risk_reason_labels.items() if flag in risk_flags)
     return _dedupe(reasons)
 
 
@@ -838,7 +1223,7 @@ def _alert_profit_eligibility(
     if profit_mid < min_profit:
         reasons.append("Expected profit below threshold")
     if profit_high > 0 and profit_mid < min_profit:
-        reasons.append("Only optimistic profit clears threshold")
+        reasons.append("Only upside case works")
     if profit_low < 0 and profit_mid < min_profit * 1.5:
         reasons.append("Conservative profit is negative")
     if parts_pricing_status in STRICT_MARGIN_PART_STATUSES and profit_mid < min_profit * 1.75:
@@ -875,6 +1260,64 @@ def _verification_risk_eligibility(
 
 def _has_blocking_risk(risk_flags: list[str]) -> bool:
     return bool(BLOCKING_RISK_FLAGS.intersection(risk_flags))
+
+
+def _risk_flags_for_score(
+    risk_flags: list[str],
+    *,
+    proof_flags: list[str],
+    hard_flags: list[str],
+    classification: dict[str, Any],
+    estimated_profit_available: bool,
+    profit_mid: float,
+    min_profit: float,
+) -> list[str]:
+    if not {"for_parts", "as_is"}.intersection(risk_flags):
+        return risk_flags
+    if _for_parts_as_is_is_context_only(
+        proof_flags=proof_flags,
+        hard_flags=hard_flags,
+        classification=classification,
+        estimated_profit_available=estimated_profit_available,
+        profit_mid=profit_mid,
+        min_profit=min_profit,
+    ):
+        return [flag for flag in risk_flags if flag not in {"for_parts", "as_is"}]
+    return risk_flags
+
+
+def _for_parts_as_is_is_context_only(
+    *,
+    proof_flags: list[str],
+    hard_flags: list[str],
+    classification: dict[str, Any],
+    estimated_profit_available: bool,
+    profit_mid: float,
+    min_profit: float,
+) -> bool:
+    dangerous_flags = {
+        "no_power",
+        "does_not_turn_on",
+        "icloud_locked",
+        "activation_locked",
+        "mdm_locked",
+        "blacklisted",
+        "bad_esn",
+        "no_service",
+        "baseband",
+        "water_damage",
+        "liquid_damage",
+        "logic_board",
+        "motherboard",
+        "board_damage",
+        "motherboard_issue",
+        "logic_issue",
+    }
+    if dangerous_flags.intersection(hard_flags):
+        return False
+    if not classification.get("whole_phone_confidence_passed") or not classification.get("has_specific_repair_issue"):
+        return False
+    return bool(proof_flags) or (estimated_profit_available and profit_mid >= min_profit * 1.5)
 
 
 def _profit_score(estimated_profit: float) -> float:

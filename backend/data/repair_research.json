@@ -1,0 +1,862 @@
+{
+"iPhone 13": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 214,
+"mid": 282,
+"high": 294
+},
+"mint": {
+"low": 282,
+"mid": 309,
+"high": 339
+},
+"confidence": "low",
+"sample_size": 213,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 273,
+"mid": 309,
+"high": 384
+},
+"mint": {
+"low": 309,
+"mid": 404,
+"high": 442
+},
+"confidence": "low",
+"sample_size": 39,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 338,
+"mid": 437,
+"high": 437
+},
+"mint": {
+"low": 437,
+"mid": 459,
+"high": 503
+},
+"confidence": "low",
+"sample_size": 8,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 13 Pro": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 268,
+"mid": 389,
+"high": 396
+},
+"mint": {
+"low": 389,
+"mid": 416,
+"high": 456
+},
+"confidence": "low",
+"sample_size": 51,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 402,
+"mid": 402,
+"high": 469
+},
+"mint": {
+"low": 402,
+"mid": 493,
+"high": 540
+},
+"confidence": "low",
+"sample_size": 32,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 444,
+"mid": 444,
+"high": 594
+},
+"mint": {
+"low": 444,
+"mid": 624,
+"high": 684
+},
+"confidence": "low",
+"sample_size": 14,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 567,
+"mid": 589,
+"high": 745
+},
+"mint": {
+"low": 589,
+"mid": 783,
+"high": 857
+},
+"confidence": "low",
+"sample_size": 4,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 13 Pro Max": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 388,
+"mid": 453,
+"high": 454
+},
+"mint": {
+"low": 453,
+"mid": 477,
+"high": 523
+},
+"confidence": "low",
+"sample_size": 52,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 490,
+"mid": 490,
+"high": 530
+},
+"mint": {
+"low": 490,
+"mid": 557,
+"high": 610
+},
+"confidence": "low",
+"sample_size": 29,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 534,
+"mid": 534,
+"high": 607
+},
+"mint": {
+"low": 534,
+"mid": 638,
+"high": 699
+},
+"confidence": "low",
+"sample_size": 20,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 560,
+"mid": 560,
+"high": 595
+},
+"mint": {
+"low": 560,
+"mid": 625,
+"high": 685
+},
+"confidence": "low",
+"sample_size": 8,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 14": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 278,
+"mid": 348,
+"high": 360
+},
+"mint": {
+"low": 348,
+"mid": 378,
+"high": 414
+},
+"confidence": "low",
+"sample_size": 91,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 339,
+"mid": 363,
+"high": 363
+},
+"mint": {
+"low": 363,
+"mid": 382,
+"high": 418
+},
+"confidence": "low",
+"sample_size": 19,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 390,
+"mid": 390,
+"high": 468
+},
+"mint": {
+"low": 390,
+"mid": 492,
+"high": 539
+},
+"confidence": "low",
+"sample_size": 15,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 14 Pro": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 370,
+"mid": 433,
+"high": 607
+},
+"mint": {
+"low": 433,
+"mid": 638,
+"high": 699
+},
+"confidence": "low",
+"sample_size": 49,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 470,
+"mid": 470,
+"high": 586
+},
+"mint": {
+"low": 470,
+"mid": 616,
+"high": 674
+},
+"confidence": "low",
+"sample_size": 30,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 559,
+"mid": 727,
+"high": 727
+},
+"mint": {
+"low": 727,
+"mid": 764,
+"high": 837
+},
+"confidence": "low",
+"sample_size": 11,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 563,
+"mid": 563,
+"high": 658
+},
+"mint": {
+"low": 563,
+"mid": 695,
+"high": 756
+},
+"confidence": "low",
+"sample_size": 11,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 14 Pro Max": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 417,
+"mid": 509,
+"high": 533
+},
+"mint": {
+"low": 509,
+"mid": 559,
+"high": 612
+},
+"confidence": "low",
+"sample_size": 64,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 556,
+"mid": 556,
+"high": 635
+},
+"mint": {
+"low": 556,
+"mid": 667,
+"high": 730
+},
+"confidence": "low",
+"sample_size": 43,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 461,
+"mid": 593,
+"high": 752
+},
+"mint": {
+"low": 593,
+"mid": 789,
+"high": 865
+},
+"confidence": "low",
+"sample_size": 23,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 637,
+"mid": 638,
+"high": 706
+},
+"mint": {
+"low": 638,
+"mid": 741,
+"high": 812
+},
+"confidence": "low",
+"sample_size": 8,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 15": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 424,
+"mid": 443,
+"high": 597
+},
+"mint": {
+"low": 443,
+"mid": 627,
+"high": 687
+},
+"confidence": "low",
+"sample_size": 88,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 447,
+"mid": 447,
+"high": 447
+},
+"mint": {
+"low": 447,
+"mid": 469,
+"high": 514
+},
+"confidence": "low",
+"sample_size": 5,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 457,
+"mid": 544,
+"high": 544
+},
+"mint": {
+"low": 544,
+"mid": 571,
+"high": 626
+},
+"confidence": "low",
+"sample_size": 8,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 15 Pro": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 514,
+"mid": 561,
+"high": 561
+},
+"mint": {
+"low": 561,
+"mid": 589,
+"high": 646
+},
+"confidence": "low",
+"sample_size": 35,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 456,
+"mid": 573,
+"high": 573
+},
+"mint": {
+"low": 573,
+"mid": 602,
+"high": 659
+},
+"confidence": "low",
+"sample_size": 15,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 534,
+"mid": 636,
+"high": 636
+},
+"mint": {
+"low": 636,
+"mid": 668,
+"high": 731
+},
+"confidence": "low",
+"sample_size": 8,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 653,
+"mid": 820,
+"high": 820
+},
+"mint": {
+"low": 820,
+"mid": 861,
+"high": 943
+},
+"confidence": "low",
+"sample_size": 5,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 15 Pro Max": {
+"resale_by_storage": {
+"256GB": {
+"good": {
+"low": 515,
+"mid": 645,
+"high": 688
+},
+"mint": {
+"low": 645,
+"mid": 722,
+"high": 791
+},
+"confidence": "low",
+"sample_size": 56,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 711,
+"mid": 711,
+"high": 746
+},
+"mint": {
+"low": 711,
+"mid": 783,
+"high": 857
+},
+"confidence": "low",
+"sample_size": 12,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 665,
+"mid": 709,
+"high": 749
+},
+"mint": {
+"low": 709,
+"mid": 861,
+"high": 861
+},
+"confidence": "low",
+"sample_size": 7,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 16": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 464,
+"mid": 619,
+"high": 649
+},
+"mint": {
+"low": 619,
+"mid": 681,
+"high": 746
+},
+"confidence": "low",
+"sample_size": 55,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 515,
+"mid": 663,
+"high": 718
+},
+"mint": {
+"low": 663,
+"mid": 754,
+"high": 826
+},
+"confidence": "low",
+"sample_size": 25,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 760,
+"mid": 760,
+"high": 760
+},
+"mint": {
+"low": 760,
+"mid": 798,
+"high": 874
+},
+"confidence": "low",
+"sample_size": 12,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 16 Pro": {
+"resale_by_storage": {
+"128GB": {
+"good": {
+"low": 634,
+"mid": 730,
+"high": 730
+},
+"mint": {
+"low": 730,
+"mid": 767,
+"high": 840
+},
+"confidence": "low",
+"sample_size": 38,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"256GB": {
+"good": {
+"low": 633,
+"mid": 772,
+"high": 772
+},
+"mint": {
+"low": 772,
+"mid": 811,
+"high": 888
+},
+"confidence": "low",
+"sample_size": 28,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 861,
+"mid": 861,
+"high": 875
+},
+"mint": {
+"low": 861,
+"mid": 919,
+"high": 1007
+},
+"confidence": "low",
+"sample_size": 17,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 895,
+"mid": 895,
+"high": 895
+},
+"mint": {
+"low": 895,
+"mid": 940,
+"high": 1030
+},
+"confidence": "low",
+"sample_size": 4,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 16 Pro Max": {
+"resale_by_storage": {
+"256GB": {
+"good": {
+"low": 669,
+"mid": 859,
+"high": 983
+},
+"mint": {
+"low": 859,
+"mid": 1033,
+"high": 1131
+},
+"confidence": "low",
+"sample_size": 39,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 686,
+"mid": 868,
+"high": 929
+},
+"mint": {
+"low": 868,
+"mid": 976,
+"high": 1069
+},
+"confidence": "low",
+"sample_size": 15,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 749,
+"mid": 977,
+"high": 1028
+},
+"mint": {
+"low": 977,
+"mid": 1080,
+"high": 1183
+},
+"confidence": "low",
+"sample_size": 15,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 17": {
+"resale_by_storage": {
+"256GB": {
+"good": {
+"low": 686,
+"mid": 743,
+"high": 793
+},
+"mint": {
+"low": 743,
+"mid": 833,
+"high": 912
+},
+"confidence": "low",
+"sample_size": 50,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 989,
+"mid": 989,
+"high": 1030
+},
+"mint": {
+"low": 989,
+"mid": 1082,
+"high": 1185
+},
+"confidence": "low",
+"sample_size": 14,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 17 Pro": {
+"resale_by_storage": {
+"256GB": {
+"good": {
+"low": 906,
+"mid": 1064,
+"high": 1111
+},
+"mint": {
+"low": 1064,
+"mid": 1167,
+"high": 1278
+},
+"confidence": "low",
+"sample_size": 18,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 1191,
+"mid": 1300,
+"high": 1300
+},
+"mint": {
+"low": 1300,
+"mid": 1365,
+"high": 1495
+},
+"confidence": "low",
+"sample_size": 13,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 1393,
+"mid": 1448,
+"high": 1488
+},
+"mint": {
+"low": 1448,
+"mid": 1563,
+"high": 1712
+},
+"confidence": "low",
+"sample_size": 7,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+},
+"iPhone 17 Pro Max": {
+"resale_by_storage": {
+"256GB": {
+"good": {
+"low": 1002,
+"mid": 1226,
+"high": 1226
+},
+"mint": {
+"low": 1226,
+"mid": 1288,
+"high": 1410
+},
+"confidence": "low",
+"sample_size": 10,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"512GB": {
+"good": {
+"low": 1290,
+"mid": 1455,
+"high": 1498
+},
+"mint": {
+"low": 1455,
+"mid": 1573,
+"high": 1723
+},
+"confidence": "low",
+"sample_size": 4,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+},
+"1TB": {
+"good": {
+"low": 1598,
+"mid": 1598,
+"high": 1598
+},
+"mint": {
+"low": 1598,
+"mid": 1678,
+"high": 1838
+},
+"confidence": "low",
+"sample_size": 2,
+"updated_at": "2026-05-25",
+"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
+}
+}
+}
+}

@@ -1,16 +1,41 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   addIgnoredKeyword,
+  clearStoredToken,
+  createUserRepairOverride,
+  createUserKeyword,
+  deleteItemCorrection,
+  deleteUserRepairOverride,
+  deleteUserKeyword,
+  getAuthStatus,
+  getCurrentUser,
   getItems,
+  getUserKeywords,
+  getUserNotifications,
+  getUserRepairOverrides,
+  getUserSettings,
   getStats,
   ignoreItem,
   ignoreSeller,
+  login,
+  register,
   noteItem,
+  logout,
   promoteItem,
+  rejectItem,
   reviewItem,
   runScan,
+  setStoredToken,
+  testDiscordNotification,
+  updateGlobalPartCost,
+  updateItemCorrection,
+  updateUserKeyword,
+  updateUserNotifications,
+  updateUserSettings,
+  updatePartCost,
   watchItem,
 } from "./api.js";
+import AdminPanel from "./components/AdminPanel.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import ItemTable from "./components/ItemTable.jsx";
 
@@ -19,6 +44,7 @@ const TABS = {
   priority_review: "Priority Review",
   needs_data: "Needs Data",
   watched: "Watched",
+  promoted: "Promoted",
   ignored: "Ignored",
   rejected: "Rejected",
   all: "All",
@@ -32,6 +58,37 @@ export default function App() {
   const [userSelectedTab, setUserSelectedTab] = useState(false);
   const [stats, setStats] = useState(null);
   const [items, setItems] = useState([]);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [registrationAvailable, setRegistrationAvailable] = useState(false);
+  const [firstUserSetupRequired, setFirstUserSetupRequired] = useState(false);
+  const [inviteRequired, setInviteRequired] = useState(false);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginPending, setLoginPending] = useState(false);
+  const [registerEmail, setRegisterEmail] = useState("");
+  const [registerPassword, setRegisterPassword] = useState("");
+  const [registerDisplayName, setRegisterDisplayName] = useState("");
+  const [registerInviteCode, setRegisterInviteCode] = useState("");
+  const [registerPending, setRegisterPending] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [keywordSaving, setKeywordSaving] = useState(false);
+  const [userSettings, setUserSettings] = useState(null);
+  const [notificationSettings, setNotificationSettings] = useState(null);
+  const [userKeywords, setUserKeywords] = useState([]);
+  const [repairOverrides, setRepairOverrides] = useState([]);
+  const [repairOverrideDraft, setRepairOverrideDraft] = useState({
+    model: "",
+    part: "screen_safe",
+    cost: "",
+    note: "",
+  });
+  const [newKeyword, setNewKeyword] = useState("");
+  const [discordWebhookInput, setDiscordWebhookInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [includeIgnored, setIncludeIgnored] = useState(false);
@@ -41,6 +98,22 @@ export default function App() {
   const [keyword, setKeyword] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  const handleAuthRequired = useCallback(() => {
+    clearStoredToken();
+    setAuthUser(null);
+    setAuthRequired(true);
+    setLoading(false);
+    setScanning(false);
+  }, []);
+
+  const applyAuthStatus = useCallback((status) => {
+    setAuthRequired(Boolean(status?.auth_required));
+    setRegistrationAvailable(Boolean(status?.registration_available));
+    setFirstUserSetupRequired(Boolean(status?.first_user_setup_required));
+    setInviteRequired(Boolean(status?.invite_required));
+    setAuthUser(status?.current_user || null);
+  }, []);
 
   const loadDashboard = useCallback(async () => {
     setError("");
@@ -56,15 +129,95 @@ export default function App() {
       setStats(nextStats);
       setItems(nextItems);
     } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [activeTab, includeIgnored, includeStale]);
+  }, [activeTab, handleAuthRequired, includeIgnored, includeStale]);
+
+  const loadSettingsPanel = useCallback(async () => {
+    setError("");
+    setSettingsLoading(true);
+    try {
+      const [settingsResult, keywordsResult, notificationsResult, repairOverridesResult] = await Promise.all([
+        getUserSettings(),
+        getUserKeywords(),
+        getUserNotifications(),
+        getUserRepairOverrides(),
+      ]);
+      setUserSettings(settingsResult.settings);
+      setUserKeywords(keywordsResult.keywords || []);
+      setNotificationSettings(notificationsResult.notifications);
+      setRepairOverrides(repairOverridesResult.repair_overrides || []);
+      setDiscordWebhookInput("");
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, [handleAuthRequired]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function initializeAuth() {
+      setError("");
+      setAuthLoading(true);
+      try {
+        const status = await getAuthStatus();
+        if (cancelled) {
+          return;
+        }
+        applyAuthStatus(status);
+        const nextAuthRequired = Boolean(status.auth_required);
+        if (!nextAuthRequired) {
+          return;
+        }
+        if (status.current_user) {
+          return;
+        }
+        try {
+          const current = await getCurrentUser();
+          if (!cancelled) {
+            setAuthUser(current.user);
+          }
+        } catch (err) {
+          if (!cancelled) {
+            clearStoredToken();
+            setAuthUser(null);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message);
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthLoading(false);
+        }
+      }
+    }
+
+    initializeAuth();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyAuthStatus]);
+
+  useEffect(() => {
+    if (authLoading || (authRequired && !authUser)) {
+      return;
+    }
     loadDashboard();
-  }, [loadDashboard]);
+  }, [authLoading, authRequired, authUser, loadDashboard]);
 
   useEffect(() => {
     if (!stats || userSelectedTab) {
@@ -79,6 +232,276 @@ export default function App() {
     }
   }, [stats, userSelectedTab]);
 
+  async function handleLogin(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    setLoginPending(true);
+    try {
+      const result = await login(loginEmail, loginPassword);
+      setStoredToken(result.access_token);
+      setAuthUser(result.user);
+      setAuthRequired(true);
+      setLoginPassword("");
+      await loadDashboard();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoginPending(false);
+    }
+  }
+
+  async function handleRegister(event) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    setRegisterPending(true);
+    try {
+      const result = await register({
+        email: registerEmail,
+        password: registerPassword,
+        display_name: registerDisplayName,
+        invite_code: inviteRequired ? registerInviteCode : undefined,
+      });
+      setStoredToken(result.access_token);
+      setAuthUser(result.user);
+      setAuthRequired(true);
+      setRegisterPassword("");
+      setRegisterInviteCode("");
+      const status = await getAuthStatus();
+      applyAuthStatus(status);
+      await loadDashboard();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRegisterPending(false);
+    }
+  }
+
+  async function handleLogout() {
+    setError("");
+    setNotice("");
+    try {
+      await logout();
+    } catch {
+      // Clearing the local token is enough for the current stateless session flow.
+    }
+    clearStoredToken();
+    setAuthUser(null);
+    setStats(null);
+    setItems([]);
+    try {
+      const status = await getAuthStatus();
+      applyAuthStatus(status);
+    } catch {
+      setRegistrationAvailable(false);
+      setFirstUserSetupRequired(false);
+      setInviteRequired(false);
+    }
+  }
+
+  async function openSettingsPanel() {
+    setAdminOpen(false);
+    setSettingsOpen(true);
+    await loadSettingsPanel();
+  }
+
+  function openAdminPanel() {
+    setSettingsOpen(false);
+    setAdminOpen(true);
+  }
+
+  function openDashboardPanel() {
+    setSettingsOpen(false);
+    setAdminOpen(false);
+  }
+
+  async function handleSaveUserSettings(event) {
+    event.preventDefault();
+    if (!userSettings) {
+      return;
+    }
+    setError("");
+    setNotice("");
+    setSettingsSaving(true);
+    try {
+      const result = await updateUserSettings(userSettings);
+      setUserSettings(result.settings);
+      setNotice("Settings saved.");
+      await loadDashboard();
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  async function handleSaveNotifications(event) {
+    event.preventDefault();
+    if (!notificationSettings) {
+      return;
+    }
+    setError("");
+    setNotice("");
+    setSettingsSaving(true);
+    try {
+      const result = await updateUserNotifications({
+        ...notificationSettings,
+        discord_webhook: discordWebhookInput.trim() || undefined,
+      });
+      setNotificationSettings(result.notifications);
+      setDiscordWebhookInput("");
+      setNotice("Notification settings saved.");
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  async function handleTestDiscord() {
+    setError("");
+    setNotice("");
+    try {
+      await testDiscordNotification();
+      setNotice("Discord test notification sent.");
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    }
+  }
+
+  async function handleCreateKeyword(event) {
+    event.preventDefault();
+    const keywordValue = newKeyword.trim();
+    if (!keywordValue) {
+      return;
+    }
+    setError("");
+    setKeywordSaving(true);
+    try {
+      const result = await createUserKeyword({ keyword: keywordValue, enabled: true });
+      setUserKeywords((current) => [...current, result.keyword]);
+      setNewKeyword("");
+      setNotice("Keyword added.");
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setKeywordSaving(false);
+    }
+  }
+
+  async function handleUpdateKeyword(keywordId, payload) {
+    setError("");
+    setKeywordSaving(true);
+    try {
+      const result = await updateUserKeyword(keywordId, payload);
+      setUserKeywords((current) => current.map((entry) => (
+        entry.id === keywordId ? result.keyword : entry
+      )));
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setKeywordSaving(false);
+    }
+  }
+
+  async function handleDeleteKeyword(keywordId) {
+    setError("");
+    setKeywordSaving(true);
+    try {
+      await deleteUserKeyword(keywordId);
+      setUserKeywords((current) => current.filter((entry) => entry.id !== keywordId));
+      setNotice("Keyword removed.");
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setKeywordSaving(false);
+    }
+  }
+
+  async function handleCreateRepairOverride(event) {
+    event.preventDefault();
+    const model = repairOverrideDraft.model.trim();
+    const cost = Number(repairOverrideDraft.cost);
+    if (!model || !Number.isFinite(cost) || cost < 0) {
+      return;
+    }
+    setError("");
+    setNotice("");
+    setSettingsSaving(true);
+    try {
+      const result = await createUserRepairOverride({
+        model,
+        part: repairOverrideDraft.part,
+        cost,
+        note: repairOverrideDraft.note.trim(),
+        source: "settings_manual_override",
+      });
+      setRepairOverrides((current) => {
+        const next = current.filter((entry) => !(
+          entry.model === result.repair_override.model && entry.part === result.repair_override.part
+        ));
+        next.push(result.repair_override);
+        return next.sort((a, b) => `${a.model}:${a.part}`.localeCompare(`${b.model}:${b.part}`));
+      });
+      setRepairOverrideDraft((current) => ({ ...current, cost: "", note: "" }));
+      setNotice("Repair override saved.");
+      await loadDashboard();
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
+  async function handleDeleteRepairOverride(overrideId) {
+    setError("");
+    setNotice("");
+    setSettingsSaving(true);
+    try {
+      await deleteUserRepairOverride(overrideId);
+      setRepairOverrides((current) => current.filter((entry) => entry.id !== overrideId));
+      setNotice("Repair override removed.");
+      await loadDashboard();
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
+      setError(err.message);
+    } finally {
+      setSettingsSaving(false);
+    }
+  }
+
   async function handleRunScan() {
     setError("");
     setNotice("");
@@ -90,6 +513,10 @@ export default function App() {
       );
       await loadDashboard();
     } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
       setError(err.message);
     } finally {
       setScanning(false);
@@ -113,9 +540,23 @@ export default function App() {
       const result = await action();
       if (result?.discord_sent) {
         setNotice("Manual promotion sent to Discord.");
+      } else if (result?.promotion_error) {
+        setNotice(`Item promoted. Discord send failed: ${result.promotion_error}`);
+      } else if (result?.correction && result?.item) {
+        setNotice("Item correction saved and listing re-scored.");
+      } else if (result?.correction === null && result?.item) {
+        setNotice("Item correction cleared and listing re-scored.");
+      } else if (result?.scope === "global_baseline") {
+        setNotice("Global repair baseline updated.");
+      } else if (result?.item) {
+        setNotice("Part cost updated and item re-scored.");
       }
       await loadDashboard();
     } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return;
+      }
       setError(err.message);
     }
   }
@@ -129,6 +570,98 @@ export default function App() {
 
   const tabCounts = useMemo(() => buildTabCounts(items), [items]);
 
+  if (authLoading) {
+    return <main className="app-shell"><div className="empty-state">Loading workspace...</div></main>;
+  }
+
+  if (authRequired && !authUser) {
+    return (
+      <main className="app-shell auth-shell">
+        <section className="auth-panel auth-panel-wide" aria-label="Authentication">
+          <div className="auth-copy">
+            <h1>Notifierr</h1>
+            <p>{firstUserSetupRequired ? "Create the owner account for this workspace." : "Private access required for the dashboard."}</p>
+          </div>
+          {error ? <div className="alert alert-error">{error}</div> : null}
+          <div className="auth-grid">
+            <section className="auth-section">
+              <div className="settings-section-header">
+                <div>
+                  <h2>Login</h2>
+                  <p>Use your existing account.</p>
+                </div>
+              </div>
+              <form className="auth-form" onSubmit={handleLogin}>
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(event) => setLoginEmail(event.target.value)}
+                  placeholder="Email"
+                  aria-label="Email"
+                />
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(event) => setLoginPassword(event.target.value)}
+                  placeholder="Password"
+                  aria-label="Password"
+                />
+                <button className="primary-button" type="submit" disabled={loginPending}>
+                  {loginPending ? "Signing in..." : "Sign in"}
+                </button>
+              </form>
+            </section>
+            {registrationAvailable ? (
+              <section className="auth-section">
+                <div className="settings-section-header">
+                  <div>
+                    <h2>{firstUserSetupRequired ? "Create owner account" : "Register"}</h2>
+                    <p>{inviteRequired ? "Registration requires a valid invite code." : "First-user setup is open for the owner account."}</p>
+                  </div>
+                </div>
+                <form className="auth-form" onSubmit={handleRegister}>
+                  <input
+                    type="email"
+                    value={registerEmail}
+                    onChange={(event) => setRegisterEmail(event.target.value)}
+                    placeholder="Email"
+                    aria-label="Register email"
+                  />
+                  <input
+                    type="text"
+                    value={registerDisplayName}
+                    onChange={(event) => setRegisterDisplayName(event.target.value)}
+                    placeholder="Display name"
+                    aria-label="Display name"
+                  />
+                  <input
+                    type="password"
+                    value={registerPassword}
+                    onChange={(event) => setRegisterPassword(event.target.value)}
+                    placeholder="Password"
+                    aria-label="Register password"
+                  />
+                  {inviteRequired ? (
+                    <input
+                      type="text"
+                      value={registerInviteCode}
+                      onChange={(event) => setRegisterInviteCode(event.target.value)}
+                      placeholder="Invite code"
+                      aria-label="Invite code"
+                    />
+                  ) : null}
+                  <button className="primary-button" type="submit" disabled={registerPending}>
+                    {registerPending ? "Creating account..." : firstUserSetupRequired ? "Create owner account" : "Create account"}
+                  </button>
+                </form>
+              </section>
+            ) : null}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar workspace-topbar">
@@ -137,6 +670,14 @@ export default function App() {
           <p>Local broken-iPhone deal review workspace</p>
         </div>
         <div className="topbar-actions">
+          <div className="topbar-nav">
+            <button type="button" className={!settingsOpen && !adminOpen ? "nav-button nav-button-active" : "nav-button"} onClick={openDashboardPanel}>Dashboard</button>
+            <button type="button" className={settingsOpen ? "nav-button nav-button-active" : "nav-button"} onClick={openSettingsPanel}>Settings</button>
+            {authUser?.role === "admin" ? (
+              <button type="button" className={adminOpen ? "nav-button nav-button-active" : "nav-button"} onClick={openAdminPanel}>Admin</button>
+            ) : null}
+          </div>
+          {authUser ? <div className="session-chip">{authUser.display_name || authUser.email}</div> : null}
           <form className="keyword-form" onSubmit={handleAddIgnoredKeyword}>
             <input
               value={keyword}
@@ -149,6 +690,7 @@ export default function App() {
           <button className="primary-button" onClick={handleRunScan} disabled={scanning}>
             {scanning ? "Scanning..." : "Run Scan"}
           </button>
+          {authUser ? <button type="button" onClick={handleLogout}>Logout</button> : null}
         </div>
       </header>
 
@@ -208,6 +750,7 @@ export default function App() {
       <ItemTable
         items={visibleItems}
         loading={loading}
+        isAdmin={authUser?.role === "admin"}
         onWatch={(item) => runAction(() => watchItem(item.item_id))}
         onReview={(item) => runAction(() => reviewItem(item.item_id))}
         onIgnore={(item) => {
@@ -223,6 +766,16 @@ export default function App() {
           }
         }}
         onPromote={(item) => runAction(() => promoteItem(item.item_id))}
+        onReject={(item) => {
+          const reason = window.prompt("Reason for rejecting this item?", item.user_reject_reason || "");
+          if (reason !== null) {
+            runAction(() => rejectItem(item.item_id, reason));
+          }
+        }}
+        onUpdatePartCost={(item, payload) => runAction(() => updatePartCost(item.model, { ...payload, item_id: item.item_id }))}
+        onUpdateGlobalPartCost={(item, payload) => runAction(() => updateGlobalPartCost(item.model, { ...payload, item_id: item.item_id }))}
+        onSaveCorrection={(item, payload) => runAction(() => updateItemCorrection(item.item_id, payload))}
+        onClearCorrection={(item) => runAction(() => deleteItemCorrection(item.item_id))}
         onNote={(item) => {
           const note = window.prompt("Note for this listing", item.user_note || "");
           if (note !== null) {
@@ -230,6 +783,248 @@ export default function App() {
           }
         }}
       />
+
+      {settingsOpen ? (
+        <section className="settings-overlay" aria-label="User settings">
+          <div className="settings-panel">
+            <div className="settings-header">
+              <div>
+                <h2>Settings</h2>
+                <p>Thresholds, polling, keywords, and notifications.</p>
+              </div>
+              <button type="button" onClick={() => setSettingsOpen(false)}>Close</button>
+            </div>
+
+            {settingsLoading ? <div className="empty-state">Loading settings...</div> : null}
+
+            {!settingsLoading && userSettings ? (
+              <form className="settings-form" onSubmit={handleSaveUserSettings}>
+                <div className="settings-grid">
+                  <label>
+                    <span>Min score to alert</span>
+                    <input type="number" min="0" max="100" step="0.01" value={userSettings.min_score_to_alert} onChange={(event) => setUserSettings((current) => ({ ...current, min_score_to_alert: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Min profit to alert</span>
+                    <input type="number" min="0" step="0.01" value={userSettings.min_profit_to_alert} onChange={(event) => setUserSettings((current) => ({ ...current, min_profit_to_alert: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Risky score min</span>
+                    <input type="number" min="0" max="100" step="0.01" value={userSettings.risky_score_min} onChange={(event) => setUserSettings((current) => ({ ...current, risky_score_min: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Risky score max</span>
+                    <input type="number" min="0" max="100" step="0.01" value={userSettings.risky_score_max} onChange={(event) => setUserSettings((current) => ({ ...current, risky_score_max: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Max alert age (minutes)</span>
+                    <input type="number" min="1" value={userSettings.max_alert_item_age_minutes} onChange={(event) => setUserSettings((current) => ({ ...current, max_alert_item_age_minutes: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Priority review age (hours)</span>
+                    <input type="number" min="1" value={userSettings.max_priority_review_item_age_hours} onChange={(event) => setUserSettings((current) => ({ ...current, max_priority_review_item_age_hours: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Active queue age (hours)</span>
+                    <input type="number" min="1" value={userSettings.max_active_queue_item_age_hours} onChange={(event) => setUserSettings((current) => ({ ...current, max_active_queue_item_age_hours: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Default resale condition</span>
+                    <select value={userSettings.default_resale_condition} onChange={(event) => setUserSettings((current) => ({ ...current, default_resale_condition: event.target.value }))}>
+                      <option value="good">Good</option>
+                      <option value="mint">Mint</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Target min model generation</span>
+                    <input type="number" min="0" max="30" value={userSettings.target_min_model_generation} onChange={(event) => setUserSettings((current) => ({ ...current, target_min_model_generation: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Background poll seconds</span>
+                    <input type="number" min="0" value={userSettings.background_poll_seconds} onChange={(event) => setUserSettings((current) => ({ ...current, background_poll_seconds: Number(event.target.value) }))} />
+                  </label>
+                  <label>
+                    <span>Active start</span>
+                    <input value={userSettings.active_start || ""} onChange={(event) => setUserSettings((current) => ({ ...current, active_start: event.target.value || null }))} placeholder="08:00" />
+                  </label>
+                  <label>
+                    <span>Active end</span>
+                    <input value={userSettings.active_end || ""} onChange={(event) => setUserSettings((current) => ({ ...current, active_end: event.target.value || null }))} placeholder="23:00" />
+                  </label>
+                  <label>
+                    <span>Timezone</span>
+                    <input value={userSettings.timezone || ""} onChange={(event) => setUserSettings((current) => ({ ...current, timezone: event.target.value }))} placeholder="America/New_York" />
+                  </label>
+                </div>
+                <div className="settings-checks">
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(userSettings.allow_mint_for_alerts)} onChange={(event) => setUserSettings((current) => ({ ...current, allow_mint_for_alerts: event.target.checked }))} />
+                    Allow mint resale for alerts
+                  </label>
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(userSettings.background_poll_enabled)} onChange={(event) => setUserSettings((current) => ({ ...current, background_poll_enabled: event.target.checked }))} />
+                    Background poll enabled
+                  </label>
+                </div>
+                <button className="primary-button" type="submit" disabled={settingsSaving}>
+                  {settingsSaving ? "Saving..." : "Save settings"}
+                </button>
+              </form>
+            ) : null}
+
+            {!settingsLoading && notificationSettings ? (
+              <form className="settings-form settings-section" onSubmit={handleSaveNotifications}>
+                <div className="settings-section-header">
+                  <h3>Notifications</h3>
+                  <p>{notificationSettings.discord_webhook_configured ? "Webhook configured" : "No webhook configured"}</p>
+                </div>
+                <div className="settings-grid">
+                  <label>
+                    <span>Discord webhook</span>
+                    <input value={discordWebhookInput} onChange={(event) => setDiscordWebhookInput(event.target.value)} placeholder={notificationSettings.discord_webhook_configured ? "Configured - enter a new webhook to replace" : "Paste Discord webhook"} />
+                  </label>
+                </div>
+                <div className="settings-checks">
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.discord_enabled)} onChange={(event) => setNotificationSettings((current) => ({ ...current, discord_enabled: event.target.checked }))} />
+                    Discord enabled
+                  </label>
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.alerts_enabled)} onChange={(event) => setNotificationSettings((current) => ({ ...current, alerts_enabled: event.target.checked }))} />
+                    Alerts enabled
+                  </label>
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.notify_best_finds)} onChange={(event) => setNotificationSettings((current) => ({ ...current, notify_best_finds: event.target.checked }))} />
+                    Notify best finds
+                  </label>
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.notify_priority_review)} onChange={(event) => setNotificationSettings((current) => ({ ...current, notify_priority_review: event.target.checked }))} />
+                    Notify priority review
+                  </label>
+                </div>
+                <div className="settings-actions-row">
+                  <button className="primary-button" type="submit" disabled={settingsSaving}>
+                    {settingsSaving ? "Saving..." : "Save notifications"}
+                  </button>
+                  <button type="button" onClick={handleTestDiscord} disabled={!notificationSettings.discord_webhook_configured}>
+                    Test Discord
+                  </button>
+                </div>
+              </form>
+            ) : null}
+
+            {!settingsLoading ? (
+              <section className="settings-section">
+                <div className="settings-section-header">
+                  <h3>Keywords</h3>
+                  <p>Baseline keywords stay attached to your account and can be disabled.</p>
+                </div>
+                <form className="keyword-form settings-keyword-form" onSubmit={handleCreateKeyword}>
+                  <input value={newKeyword} onChange={(event) => setNewKeyword(event.target.value)} placeholder="Add keyword" aria-label="Add keyword" />
+                  <button type="submit" disabled={keywordSaving}>Add keyword</button>
+                </form>
+                <div className="settings-keyword-list">
+                  {userKeywords.map((entry) => (
+                    <div className="settings-keyword-row" key={entry.id}>
+                      <div>
+                        <strong>{entry.keyword}</strong>
+                        <p>{entry.is_baseline ? "Baseline keyword" : "Custom keyword"}</p>
+                      </div>
+                      <div className="settings-actions-row">
+                        <label className="toggle-control">
+                          <input type="checkbox" checked={Boolean(entry.enabled)} onChange={(event) => handleUpdateKeyword(entry.id, { enabled: event.target.checked })} />
+                          Enabled
+                        </label>
+                        {!entry.is_baseline ? <button type="button" onClick={() => handleDeleteKeyword(entry.id)}>Delete</button> : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {!settingsLoading ? (
+              <section className="settings-section">
+                <div className="settings-section-header">
+                  <h3>Repair overrides</h3>
+                  <p>Your private part-cost overrides sit on top of the global baseline.</p>
+                </div>
+                <form className="settings-form" onSubmit={handleCreateRepairOverride}>
+                  <div className="settings-grid">
+                    <label>
+                      <span>Model</span>
+                      <input
+                        value={repairOverrideDraft.model}
+                        onChange={(event) => setRepairOverrideDraft((current) => ({ ...current, model: event.target.value }))}
+                        placeholder="iPhone 14"
+                      />
+                    </label>
+                    <label>
+                      <span>Part</span>
+                      <select
+                        value={repairOverrideDraft.part}
+                        onChange={(event) => setRepairOverrideDraft((current) => ({ ...current, part: event.target.value }))}
+                      >
+                        <option value="screen_budget">Screen budget</option>
+                        <option value="screen_safe">Screen safe</option>
+                        <option value="screen_premium">Screen premium</option>
+                        <option value="battery">Battery</option>
+                        <option value="back_glass">Back glass</option>
+                        <option value="camera_lens">Camera lens</option>
+                        <option value="charging_port">Charging port</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Cost</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={repairOverrideDraft.cost}
+                        onChange={(event) => setRepairOverrideDraft((current) => ({ ...current, cost: event.target.value }))}
+                        placeholder="95.00"
+                      />
+                    </label>
+                    <label>
+                      <span>Note</span>
+                      <input
+                        value={repairOverrideDraft.note}
+                        onChange={(event) => setRepairOverrideDraft((current) => ({ ...current, note: event.target.value }))}
+                        placeholder="Optional source or note"
+                      />
+                    </label>
+                  </div>
+                  <button className="primary-button" type="submit" disabled={settingsSaving}>
+                    {settingsSaving ? "Saving..." : "Save repair override"}
+                  </button>
+                </form>
+                <div className="settings-keyword-list">
+                  {repairOverrides.length ? repairOverrides.map((entry) => (
+                    <div className="settings-keyword-row" key={entry.id}>
+                      <div>
+                        <strong>{entry.model} · {entry.part}</strong>
+                        <p>{Number(entry.cost).toFixed(2)}{entry.note ? ` · ${entry.note}` : ""}</p>
+                      </div>
+                      <div className="settings-actions-row">
+                        <button type="button" onClick={() => handleDeleteRepairOverride(entry.id)}>Delete</button>
+                      </div>
+                    </div>
+                  )) : <div className="empty-state">No repair overrides saved.</div>}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      {adminOpen && authUser?.role === "admin" ? (
+        <AdminPanel
+          onClose={openDashboardPanel}
+          onUnauthorized={handleAuthRequired}
+          onError={setError}
+          onNotice={setNotice}
+        />
+      ) : null}
     </main>
   );
 }
@@ -250,8 +1045,11 @@ function tabMatches(item, tab) {
   if (tab === "watched") {
     return item.user_status === "watched";
   }
+  if (tab === "promoted") {
+    return item.user_status === "promoted" && Boolean(item.promoted_at);
+  }
   if (tab === "rejected") {
-    return item.status === "rejected" && item.user_status !== "ignored";
+    return (item.status === "rejected" || item.user_status === "rejected") && item.user_status !== "ignored";
   }
   if (tab === "ignored") {
     return item.user_status === "ignored";
@@ -265,7 +1063,9 @@ function tabMatches(item, tab) {
 function isBestFind(item) {
   return ["candidate", "alerted"].includes(item.status)
     && item.alert_eligible === true
-    && item.user_status !== "ignored"
+    && !["ignored", "rejected"].includes(item.user_status)
+    && !isUnavailable(item)
+    && item.buying_option_summary !== "auction"
     && item.fresh_for_alert !== false
     && item.stale !== true;
 }
@@ -288,6 +1088,9 @@ function isReviewQueueItem(item) {
 }
 
 function isPriorityReviewItem(item) {
+  if (isUnavailable(item)) {
+    return false;
+  }
   if (item.user_status !== "new" || item.user_status === "ignored" || item.status === "rejected") {
     return false;
   }
@@ -303,10 +1106,14 @@ function isPriorityReviewItem(item) {
   if (hasExcludedHardReject(item) || isAccessoryOrPartListing(item)) {
     return false;
   }
+  if (usesModelResaleWithoutStorage(item) && !storageFallbackPriorityException(item)) {
+    return false;
+  }
   return (
     Number(item.profit_mid || item.estimated_profit || 0) >= PRIORITY_REVIEW_MIN_PROFIT
     || Number(item.profit_high || 0) >= PRIORITY_REVIEW_UPSIDE
     || hasManualReason(item, ["Too cheap without proof"])
+    || hasManualReason(item, ["Profit depends on mint resale"])
     || (
       item.estimated_parts_cost_available === false
       && Number(item.resale_mid || item.resale_value || 0) > 0
@@ -315,7 +1122,10 @@ function isPriorityReviewItem(item) {
 }
 
 function isNeedsDataItem(item) {
-  if (item.user_status === "ignored" || item.status === "rejected") {
+  if (isUnavailable(item)) {
+    return false;
+  }
+  if (["ignored", "rejected"].includes(item.user_status) || item.status === "rejected") {
     return false;
   }
   if (item.stale === true) {
@@ -323,6 +1133,8 @@ function isNeedsDataItem(item) {
   }
   return (
     !hasKnownModel(item)
+    || (usesModelResaleWithoutStorage(item) && !storageFallbackPriorityException(item))
+    || (Boolean(item.storage_resale_warning) && item.resale_source !== "storage_specific")
     || Number(item.resale_value || item.resale_mid || 0) <= 0
     || item.estimated_parts_cost_available === false
     || item.has_repair_issue === false
@@ -330,9 +1142,10 @@ function isNeedsDataItem(item) {
       "Parts-only ambiguous",
       "Read description listing",
       "Expected profit below threshold",
-      "Only optimistic profit clears threshold",
+      "Only upside case works",
       "Low-confidence pricing needs stronger profit",
       "Too cheap without proof",
+      "Profit depends on mint resale",
       "Parts-only listing lacks power/iCloud/IMEI proof",
       "Model/spec mismatch",
       "Missing part price",
@@ -340,6 +1153,29 @@ function isNeedsDataItem(item) {
       "No specific repair issue detected",
     ])
   );
+}
+
+function usesModelResaleWithoutStorage(item) {
+  return !item.storage_capacity && ["model_range", "legacy_resale_value"].includes(item.resale_source);
+}
+
+function storageFallbackPriorityException(item) {
+  if (["watched", "promoted"].includes(item.user_status)) {
+    return true;
+  }
+  if (Number(item.profit_mid || item.estimated_profit || 0) >= 150) {
+    return true;
+  }
+  const proofFlags = new Set(item.positive_flags || []);
+  const strongProofCount = ["powers_on", "clean_imei", "face_id_works", "unlocked"]
+    .filter((flag) => proofFlags.has(flag)).length;
+  return item.has_repair_issue === true
+    && item.estimated_profit_available === true
+    && strongProofCount >= 2;
+}
+
+function isUnavailable(item) {
+  return ["sold", "ended", "unavailable"].includes(item.availability_status || "unknown");
 }
 
 function hasKnownModel(item) {

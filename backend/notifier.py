@@ -13,6 +13,20 @@ class DiscordNotifier:
     def __init__(self, webhook_url: Optional[str]):
         self.webhook_url = webhook_url
 
+    async def send_message(self, content: str) -> bool:
+        if not self.webhook_url:
+            logger.info("Discord webhook not configured; skipping generic notification")
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(self.webhook_url, json={"content": content[:1900]})
+                response.raise_for_status()
+        except httpx.HTTPError:
+            logger.warning("Discord notification request failed")
+            return False
+        logger.info("Sent Discord notification")
+        return True
+
     async def send_deal(self, item: dict[str, Any], *, content: str | None = None) -> bool:
         if not self.webhook_url:
             logger.info("Discord webhook not configured; skipping notification item_id=%s", item["item_id"])
@@ -52,8 +66,8 @@ class DiscordNotifier:
                 },
                 {"name": _resale_field_name(item), "value": _resale_value(item), "inline": True},
                 {
-                    "name": "Profit range",
-                    "value": _profit_range_value(item),
+                    "name": "Floor profit",
+                    "value": _floor_profit_value(item),
                     "inline": True,
                 },
                 {
@@ -110,43 +124,28 @@ def _profit_value(item: dict[str, Any]) -> str:
     if not item.get("estimated_profit_available", True):
         return item.get("pricing_warning") or "Estimated profit unavailable — resale value missing"
     if item.get("parts_pricing_label") == "Parts estimate not verified":
-        return f"Rough profit — parts estimate not verified: {_money(item.get('estimated_profit'))}"
-    return _money(item.get("estimated_profit"))
+        return f"Rough profit — parts estimate not verified: {_money(item.get('profit_mid') or item.get('estimated_profit'))}"
+    return _money(item.get("profit_mid") or item.get("estimated_profit"))
 
 
 def _resale_field_name(item: dict[str, Any]) -> str:
-    return "Resale range" if _has_resale_range(item) else "Estimated resale"
+    if item.get("resale_storage_used"):
+        return f"Expected resale ({item.get('resale_storage_used')})"
+    return "Expected resale"
 
 
 def _resale_value(item: dict[str, Any]) -> str:
-    if _has_resale_range(item):
-        return f"{_money(item.get('resale_low'))}–{_money(item.get('resale_high'))}"
-    if float(item.get("resale_value") or 0) <= 0:
+    resale = item.get("resale_mid") or item.get("resale_value")
+    if float(resale or 0) <= 0:
         return "Resale value missing"
-    return _money(item.get("resale_value"))
+    return _money(resale)
 
 
-def _profit_range_value(item: dict[str, Any]) -> str:
+def _floor_profit_value(item: dict[str, Any]) -> str:
     if not item.get("estimated_profit_available", True):
         return item.get("pricing_warning") or "Estimated profit unavailable — resale value missing"
-    if not _has_profit_range(item):
-        return _money(item.get("estimated_profit"))
-    prefix = "Rough profit range — parts estimate not verified: " if item.get("parts_pricing_label") == "Parts estimate not verified" else ""
-    return f"{prefix}{_money(item.get('profit_low'))}–{_money(item.get('profit_high'))}"
-
-
-def _has_resale_range(item: dict[str, Any]) -> bool:
-    low = float(item.get("resale_low") or 0)
-    mid = float(item.get("resale_mid") or item.get("resale_value") or 0)
-    high = float(item.get("resale_high") or 0)
-    return low > 0 and mid > 0 and high > 0 and low != high
-
-
-def _has_profit_range(item: dict[str, Any]) -> bool:
-    low = float(item.get("profit_low") or 0)
-    mid = float(item.get("profit_mid") or item.get("estimated_profit") or 0)
-    high = float(item.get("profit_high") or 0)
-    return low != high and any(value != 0 for value in (low, mid, high))
+    prefix = "Rough floor — parts estimate not verified: " if item.get("parts_pricing_label") == "Parts estimate not verified" else ""
+    return f"{prefix}{_money(item.get('profit_low') or item.get('estimated_profit'))}"
 
 
 def _truncate(value: str) -> str:

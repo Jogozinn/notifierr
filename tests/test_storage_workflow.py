@@ -115,6 +115,8 @@ def test_old_database_without_workflow_columns_migrates(tmp_path):
     assert "ignored_at" in columns
     assert "watched_at" in columns
     assert "promoted_at" in columns
+    assert "rejected_by_user_at" in columns
+    assert "user_reject_reason" in columns
     assert "ignored_reason" in columns
     assert "ignored_seller" in columns
     assert "updated_by_user_at" in columns
@@ -129,6 +131,25 @@ def test_old_database_without_workflow_columns_migrates(tmp_path):
     assert "resale_sample_size" in columns
     assert "resale_note" in columns
     assert "alert_eligible" in columns
+    assert "storage_capacity" in columns
+    assert "storage_confidence" in columns
+    assert "storage_source" in columns
+    assert "resale_source" in columns
+    assert "resale_market_source" in columns
+    assert "resale_condition_used" in columns
+    assert "resale_storage_used" in columns
+    assert "storage_resale_warning" in columns
+    assert "mint_resale_low" in columns
+    assert "mint_resale_mid" in columns
+    assert "mint_resale_high" in columns
+    assert "mint_profit_low" in columns
+    assert "mint_profit_mid" in columns
+    assert "mint_profit_high" in columns
+    assert "availability_status" in columns
+    assert "buying_option_summary" in columns
+    assert "item_end_at" in columns
+    assert "last_availability_checked_at" in columns
+    assert "availability_note" in columns
     assert storage.get_item("old-1")["user_status"] == "new"
     assert storage.stats()["new_items"] == 1
 
@@ -164,6 +185,20 @@ def test_storage_round_trips_resale_and_profit_range_fields():
             "resale_confidence": "high",
             "resale_sample_size": 18,
             "resale_note": "Manual sold comps",
+            "storage_capacity": "256GB",
+            "storage_confidence": "high",
+            "storage_source": "title",
+            "resale_source": "storage_specific",
+            "resale_market_source": "resale_research",
+            "resale_condition_used": "Good",
+            "resale_storage_used": "256GB",
+            "storage_resale_warning": "",
+            "mint_resale_low": 620,
+            "mint_resale_mid": 660,
+            "mint_resale_high": 700,
+            "mint_profit_low": 210,
+            "mint_profit_mid": 250,
+            "mint_profit_high": 290,
             "alert_eligible": True,
         }
     )
@@ -180,7 +215,69 @@ def test_storage_round_trips_resale_and_profit_range_fields():
     assert item["resale_confidence"] == "high"
     assert item["resale_sample_size"] == 18
     assert item["resale_note"] == "Manual sold comps"
+    assert item["storage_capacity"] == "256GB"
+    assert item["storage_confidence"] == "high"
+    assert item["storage_source"] == "title"
+    assert item["resale_source"] == "storage_specific"
+    assert item["resale_market_source"] == "resale_research"
+    assert item["resale_condition_used"] == "Good"
+    assert item["resale_storage_used"] == "256GB"
+    assert item["storage_resale_warning"] == ""
+    assert item["mint_resale_low"] == 620
+    assert item["mint_resale_mid"] == 660
+    assert item["mint_resale_high"] == 700
+    assert item["mint_profit_low"] == 210
+    assert item["mint_profit_mid"] == 250
+    assert item["mint_profit_high"] == 290
     assert item["alert_eligible"] is True
+
+
+def test_user_reject_removes_item_from_active_queues_but_keeps_history():
+    storage = Storage(Path(":memory:"))
+    storage.upsert_item(
+        {
+            "item_id": "reject-me",
+            "title": "Apple iPhone 14 128GB Unlocked Cracked Screen",
+            "status": "candidate",
+            "alert_eligible": True,
+            "model": "iPhone 14",
+            "whole_phone_confidence_passed": True,
+            "has_repair_issue": True,
+            "estimated_profit_available": True,
+            "estimated_parts_cost_available": True,
+            "resale_value": 500,
+            "resale_mid": 500,
+            "estimated_profit": 150,
+            "profit_mid": 150,
+        }
+    )
+
+    rejected = storage.set_user_status("reject-me", "rejected", ignored_reason="Too high after review")
+
+    assert rejected["user_status"] == "rejected"
+    assert rejected["rejected_by_user_at"]
+    assert rejected["user_reject_reason"] == "Too high after review"
+    assert storage.item_exists("reject-me") is True
+    assert storage.stats()["best_finds"] == 0
+    assert storage.stats()["user_rejected"] == 1
+
+
+def test_promoted_items_are_counted_for_promoted_queue():
+    storage = Storage(Path(":memory:"))
+    storage.upsert_item(
+        {
+            "item_id": "promote-me",
+            "title": "Apple iPhone 14 128GB Unlocked Cracked Screen",
+            "status": "risky",
+            "model": "iPhone 14",
+        }
+    )
+
+    promoted = storage.set_user_status("promote-me", "promoted")
+
+    assert promoted["user_status"] == "promoted"
+    assert promoted["promoted_at"]
+    assert storage.stats()["promoted"] == 1
 
 
 def test_previously_alerted_item_can_be_demoted_after_rescore():
@@ -293,6 +390,106 @@ def test_priority_review_stats_surface_only_worthwhile_uncertain_items():
 
     assert stats["priority_review"] == 3
     assert stats["best_finds"] == 1
+
+
+def test_priority_review_prefers_storage_specific_resale_over_unknown_storage_fallback():
+    storage = Storage(Path(":memory:"))
+    base_item = {
+        "title": "Apple iPhone 13 Pro Unlocked Cracked Screen",
+        "status": "risky",
+        "user_status": "new",
+        "model": "iPhone 13 Pro",
+        "whole_phone_confidence_passed": True,
+        "has_repair_issue": True,
+        "estimated_profit_available": True,
+        "estimated_parts_cost_available": True,
+        "resale_value": 470,
+        "resale_mid": 470,
+        "profit_mid": 80,
+        "profit_high": 140,
+        "manual_review_reason": "Expected profit below threshold",
+    }
+    storage.upsert_item(
+        {
+            **base_item,
+            "item_id": "storage-specific",
+            "title": "Apple iPhone 13 Pro 128GB Unlocked Cracked Screen",
+            "storage_capacity": "128GB",
+            "storage_confidence": "high",
+            "storage_source": "title",
+            "resale_source": "storage_specific",
+            "resale_storage_used": "128GB",
+            "manual_review_reason": "",
+        }
+    )
+    storage.upsert_item(
+        {
+            **base_item,
+            "item_id": "unknown-storage-fallback",
+            "resale_source": "model_range",
+            "storage_resale_warning": "Storage unknown - model-level resale used",
+        }
+    )
+
+    stats = storage.stats()
+    needs_data_ids = {item["item_id"] for item in storage.list_items() if item["item_id"] == "unknown-storage-fallback"}
+
+    assert stats["priority_review"] == 1
+    assert stats["needs_data"] == 1
+    assert needs_data_ids == {"unknown-storage-fallback"}
+
+
+def test_sold_item_is_hidden_from_best_finds_and_priority_review():
+    storage = Storage(Path(":memory:"))
+    base_item = {
+        "title": "Apple iPhone 14 128GB Unlocked Cracked Screen",
+        "user_status": "new",
+        "model": "iPhone 14",
+        "whole_phone_confidence_passed": True,
+        "has_repair_issue": True,
+        "estimated_profit_available": True,
+        "estimated_parts_cost_available": True,
+        "resale_value": 500,
+        "resale_mid": 500,
+        "estimated_profit": 150,
+        "profit_mid": 150,
+    }
+    storage.upsert_item({**base_item, "item_id": "sold-best", "status": "candidate", "alert_eligible": True, "availability_status": "sold"})
+    storage.upsert_item({**base_item, "item_id": "ended-priority", "status": "risky", "alert_eligible": False, "availability_status": "ended", "profit_mid": 50})
+
+    stats = storage.stats()
+
+    assert stats["best_finds"] == 0
+    assert stats["priority_review"] == 0
+    assert storage.get_item("sold-best")["unavailable"] is True
+
+
+def test_selective_availability_refresh_skips_rejected_ignored_and_needs_data():
+    storage = Storage(Path(":memory:"))
+    base_item = {
+        "title": "Apple iPhone 14 128GB Unlocked Cracked Screen",
+        "user_status": "new",
+        "model": "iPhone 14",
+        "whole_phone_confidence_passed": True,
+        "has_repair_issue": True,
+        "estimated_profit_available": True,
+        "estimated_parts_cost_available": True,
+        "resale_value": 500,
+        "resale_mid": 500,
+        "estimated_profit": 150,
+        "profit_mid": 150,
+    }
+    storage.upsert_item({**base_item, "item_id": "best", "status": "candidate", "alert_eligible": True})
+    storage.upsert_item({**base_item, "item_id": "priority", "status": "risky", "alert_eligible": False, "profit_mid": 50})
+    storage.upsert_item({**base_item, "item_id": "watched", "status": "rejected", "user_status": "watched"})
+    storage.upsert_item({**base_item, "item_id": "promoted", "status": "rejected", "user_status": "promoted"})
+    storage.upsert_item({**base_item, "item_id": "rejected", "status": "rejected"})
+    storage.upsert_item({**base_item, "item_id": "ignored", "status": "candidate", "alert_eligible": True, "user_status": "ignored"})
+    storage.upsert_item({**base_item, "item_id": "needs-data", "status": "risky", "model": "unknown", "alert_eligible": False})
+
+    refresh_ids = {item["item_id"] for item in storage.list_items_for_availability_refresh()}
+
+    assert refresh_ids == {"best", "priority", "watched", "promoted"}
 
 
 def _item_columns(db_path: Path) -> set[str]:

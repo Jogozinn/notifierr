@@ -44,6 +44,57 @@ def test_fresh_alert_eligible_item_appears_in_best_finds():
     assert storage.list_items()[0]["fresh_for_alert"] is True
 
 
+def test_auction_with_more_than_six_hours_left_is_not_best_find():
+    storage = Storage(Path(":memory:"))
+    item = main._apply_availability_and_auction_policy(
+        _base_item(
+            "auction-later",
+            buying_option_summary="auction",
+            item_end_at=(datetime.now(timezone.utc) + timedelta(hours=12)).isoformat(),
+        )
+    )
+    storage.upsert_item(item)
+
+    stored = storage.get_item("auction-later")
+
+    assert storage.stats()["best_finds"] == 0
+    assert stored["alert_eligible"] is False
+    assert "Auction - not urgent" in stored["manual_review_reason"]
+
+
+def test_auction_ending_soon_can_stay_priority_review():
+    storage = Storage(Path(":memory:"))
+    item = main._apply_availability_and_auction_policy(
+        _base_item(
+            "auction-soon",
+            buying_option_summary="auction",
+            item_end_at=(datetime.now(timezone.utc) + timedelta(hours=2)).isoformat(),
+        )
+    )
+    storage.upsert_item(item)
+
+    stats = storage.stats()
+
+    assert stats["best_finds"] == 0
+    assert stats["priority_review"] == 1
+
+
+def test_buy_it_now_item_remains_best_find_eligible():
+    storage = Storage(Path(":memory:"))
+    storage.upsert_item(_base_item("bin-best", buying_option_summary="buy_it_now"))
+
+    assert storage.stats()["best_finds"] == 1
+
+
+def test_user_note_sold_keyword_is_stored_for_dashboard_warning():
+    storage = Storage(Path(":memory:"))
+    storage.upsert_item(_base_item("note-sold"))
+
+    item = storage.set_note("note-sold", "sold - ignore")
+
+    assert "sold" in item["user_note"]
+
+
 def test_old_alert_eligible_item_is_hidden_from_best_finds_but_kept_for_dedupe():
     storage = Storage(Path(":memory:"))
     storage.upsert_item(_base_item("old-best", age_hours=25))
@@ -142,6 +193,7 @@ def test_scan_summary_counts_fresh_new_stale_and_does_not_resend_alerts(monkeypa
         monkeypatch.setattr(main, "_scan_lock", asyncio.Lock())
         monkeypatch.setattr(main, "settings", Settings(ebay_client_id="id", ebay_client_secret="secret", discord_webhook_url="hook"))
         monkeypatch.setattr(main, "storage", Storage(Path(":memory:")))
+        monkeypatch.setattr(main, "resale_research", {})
         monkeypatch.setattr(
             main,
             "repair_values",

@@ -10,6 +10,7 @@ from typing import Optional
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DEFAULT_REPAIR_VALUES_PATH = DATA_DIR / "repair_values.json"
+DEFAULT_RESALE_RESEARCH_PATH = DATA_DIR / "resale_research.json"
 DEFAULT_SCORING_RULES_PATH = DATA_DIR / "scoring_rules.json"
 
 DEFAULT_KEYWORDS = [
@@ -64,8 +65,32 @@ def _env_keywords() -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _env_cors_origins(default: list[str]) -> list[str]:
+    configured = (
+        os.getenv("CORS_ALLOWED_ORIGINS")
+        or os.getenv("CORS_ORIGINS")
+        or ""
+    ).strip()
+    if configured:
+        return [item.strip() for item in configured.split(",") if item.strip()]
+    frontend_origin = (os.getenv("FRONTEND_ORIGIN") or "").strip()
+    if frontend_origin:
+        merged = [*default, frontend_origin]
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for origin in merged:
+            if origin in seen:
+                continue
+            seen.add(origin)
+            deduped.append(origin)
+        return deduped
+    return list(default)
+
+
 @dataclass(frozen=True)
 class Settings:
+    db_backend: str = "sqlite"
+    database_url: Optional[str] = None
     ebay_client_id: Optional[str] = None
     ebay_client_secret: Optional[str] = None
     ebay_marketplace_id: str = "EBAY_US"
@@ -75,6 +100,7 @@ class Settings:
     discord_webhook_url: Optional[str] = None
     sqlite_path: Path = DATA_DIR / "notifierr.sqlite3"
     repair_values_path: Path = DEFAULT_REPAIR_VALUES_PATH
+    resale_research_path: Path = DEFAULT_RESALE_RESEARCH_PATH
     scoring_rules_path: Path = DEFAULT_SCORING_RULES_PATH
     search_keywords: list[str] = field(default_factory=lambda: list(DEFAULT_KEYWORDS))
     cors_origins: list[str] = field(default_factory=lambda: ["http://127.0.0.1:5173", "http://localhost:5173"])
@@ -91,6 +117,13 @@ class Settings:
     background_poll_active_start: Optional[str] = None
     background_poll_active_end: Optional[str] = None
     background_poll_timezone: str = "America/New_York"
+    auth_required: bool = False
+    auth_secret_key: str = "notifierr-local-auth-secret-change-me-123456"
+    access_token_expire_minutes: int = 720
+    app_encryption_key: Optional[str] = None
+    admin_email: Optional[str] = None
+    admin_password: Optional[str] = None
+    admin_display_name: Optional[str] = None
 
     @property
     def ebay_configured(self) -> bool:
@@ -110,12 +143,15 @@ class Settings:
 
     def public_dict(self) -> dict:
         return {
+            "db_backend": self.db_backend,
+            "database_configured": bool(self.database_url) if self.db_backend == "postgres" else True,
             "ebay_configured": self.ebay_configured,
             "discord_configured": self.discord_configured,
             "ebay_marketplace_id": self.ebay_marketplace_id,
             "ebay_fetch_descriptions": self.ebay_fetch_descriptions,
             "sqlite_path": str(self.sqlite_path),
             "repair_values_path": str(self.repair_values_path),
+            "resale_research_path": str(self.resale_research_path),
             "scoring_rules_path": str(self.scoring_rules_path),
             "search_keywords": self.search_keywords,
             "cors_origins": self.cors_origins,
@@ -132,6 +168,8 @@ class Settings:
             "background_poll_active_start": self.background_poll_active_start,
             "background_poll_active_end": self.background_poll_active_end,
             "background_poll_timezone": self.background_poll_timezone,
+            "auth_required": self.auth_required,
+            "encryption_configured": bool(self.app_encryption_key),
         }
 
 
@@ -141,9 +179,12 @@ def load_settings() -> Settings:
 
     sqlite_path = Path(os.getenv("SQLITE_PATH", str(DATA_DIR / "notifierr.sqlite3")))
     repair_values_path = Path(os.getenv("REPAIR_VALUES_PATH", str(DEFAULT_REPAIR_VALUES_PATH)))
+    resale_research_path = Path(os.getenv("RESALE_RESEARCH_PATH", str(DEFAULT_RESALE_RESEARCH_PATH)))
     scoring_rules_path = Path(os.getenv("SCORING_RULES_PATH", str(DEFAULT_SCORING_RULES_PATH)))
 
     return Settings(
+        db_backend=(os.getenv("DB_BACKEND", "sqlite") or "sqlite").strip().lower(),
+        database_url=os.getenv("DATABASE_URL") or None,
         ebay_client_id=os.getenv("EBAY_CLIENT_ID"),
         ebay_client_secret=os.getenv("EBAY_CLIENT_SECRET"),
         ebay_marketplace_id=os.getenv("EBAY_MARKETPLACE_ID", "EBAY_US"),
@@ -156,10 +197,10 @@ def load_settings() -> Settings:
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
         sqlite_path=sqlite_path,
         repair_values_path=repair_values_path,
+        resale_research_path=resale_research_path,
         scoring_rules_path=scoring_rules_path,
         search_keywords=_env_keywords(),
-        cors_origins=_env_list(
-            "CORS_ORIGINS",
+        cors_origins=_env_cors_origins(
             ["http://127.0.0.1:5173", "http://localhost:5173"],
         ),
         max_results_per_keyword=_env_int("MAX_RESULTS_PER_KEYWORD", 25),
@@ -175,6 +216,13 @@ def load_settings() -> Settings:
         background_poll_active_start=os.getenv("BACKGROUND_POLL_ACTIVE_START") or None,
         background_poll_active_end=os.getenv("BACKGROUND_POLL_ACTIVE_END") or None,
         background_poll_timezone=os.getenv("BACKGROUND_POLL_TIMEZONE", "America/New_York"),
+        auth_required=_env_bool("AUTH_REQUIRED", False),
+        auth_secret_key=os.getenv("AUTH_SECRET_KEY", "notifierr-local-auth-secret-change-me-123456"),
+        access_token_expire_minutes=_env_int("ACCESS_TOKEN_EXPIRE_MINUTES", 720),
+        app_encryption_key=os.getenv("APP_ENCRYPTION_KEY") or None,
+        admin_email=os.getenv("ADMIN_EMAIL") or None,
+        admin_password=os.getenv("ADMIN_PASSWORD") or None,
+        admin_display_name=os.getenv("ADMIN_DISPLAY_NAME") or None,
     )
 
 
@@ -199,6 +247,13 @@ def _env_range(name: str, default: tuple[float, float]) -> tuple[float, float]:
 
 
 def load_repair_values(path: Path = DEFAULT_REPAIR_VALUES_PATH) -> dict:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def load_resale_research(path: Path = DEFAULT_RESALE_RESEARCH_PATH) -> dict:
+    if not path.exists():
+        return {}
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 

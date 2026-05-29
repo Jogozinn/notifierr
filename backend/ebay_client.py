@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import html
 import logging
+import re
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -88,6 +91,21 @@ class EbayClient:
             logger.warning("Could not fetch eBay item details item_id=%s error=%s", item_id, exc)
             return {}
 
+    async def fetch_item_detail(self, item_id: str) -> dict[str, Any]:
+        if not self.settings.ebay_configured:
+            raise RuntimeError("EBAY_CLIENT_ID and EBAY_CLIENT_SECRET are required to fetch eBay item details")
+
+        access_token = await self._get_access_token()
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "X-EBAY-C-MARKETPLACE-ID": self.settings.ebay_marketplace_id,
+        }
+        async with httpx.AsyncClient(timeout=20) as client:
+            details = await self._fetch_details(client, headers, item_id)
+        if not details:
+            return {}
+        return normalize_item({"itemId": item_id}, details)
+
 
 def normalize_item(summary: dict[str, Any], details: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     details = details or {}
@@ -101,6 +119,8 @@ def normalize_item(summary: dict[str, Any], details: Optional[dict[str, Any]] = 
         or details.get("itemOriginDate")
         or now_iso()
     )
+    availability_status = _availability_status(summary, details)
+    buying_option_summary = _buying_option_summary(summary, details)
 
     return {
         "item_id": str(summary.get("itemId")),
@@ -115,7 +135,12 @@ def normalize_item(summary: dict[str, Any], details: Optional[dict[str, Any]] = 
         "seller_username": seller.get("username"),
         "seller_feedback_percentage": _safe_float(seller.get("feedbackPercentage")),
         "seller_feedback_score": _safe_int(seller.get("feedbackScore")),
-        "raw_description": details.get("description"),
+        "raw_description": clean_description(details.get("description")),
+        "availability_status": availability_status,
+        "buying_option_summary": buying_option_summary,
+        "item_end_at": summary.get("itemEndDate") or details.get("itemEndDate"),
+        "last_availability_checked_at": now_iso() if summary or details else None,
+        "availability_note": _availability_note(availability_status, buying_option_summary, summary, details),
         "found_at": listing_origin_at,
         "item_origin_at": listing_origin_at,
         "raw_json": {"summary": summary, "details": details},
@@ -154,3 +179,121 @@ def _safe_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def clean_description(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if not text.strip():
+        return None
+    text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", text)
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
+    lines = [_clean_boilerplate_line(line.strip()) for line in text.split("\n")]
+    lines = [line for line in lines if line]
+    cleaned = "\n".join(lines).strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned or None
+
+
+def _clean_boilerplate_line(line: str) -> str:
+    boilerplate = (
+        "powered by",
+        "supreme widgets",
+        "ebay template",
+        "thanks for looking",
+        "please see my other items",
+    )
+    lowered = line.lower()
+    if any(phrase in lowered for phrase in boilerplate):
+        return ""
+    return line
+
+
+def _availability_status(summary: dict[str, Any], details: dict[str, Any]) -> str:
+    end_at = _parse_time(summary.get("itemEndDate") or details.get("itemEndDate"))
+    if end_at and end_at <= datetime.now(timezone.utc):
+        return "ended"
+    text_parts = [
+        summary.get("itemAffiliateWebUrl"),
+        summary.get("itemWebUrl"),
+        summary.get("itemLocation"),
+        summary.get("itemEndDate"),
+        details.get("itemEndDate"),
+    ]
+    for source in (summary, details):
+        for key in ("itemStatus", "availability", "availabilityStatus", "legacyItemStatus"):
+            value = source.get(key)
+            if value:
+                text_parts.append(value)
+        for availability in source.get("estimatedAvailabilities") or []:
+            text_parts.extend(str(value) for value in availability.values() if value is not None)
+    text = " ".join(str(part) for part in text_parts if part).lower()
+    if any(word in text for word in ("sold", "out_of_stock", "out of stock")):
+        return "sold"
+    if any(word in text for word in ("ended", "expired", "completed")):
+        return "ended"
+    if any(word in text for word in ("unavailable", "not available")):
+        return "unavailable"
+    if text:
+        return "active"
+    return "unknown"
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _buying_option_summary(summary: dict[str, Any], details: dict[str, Any]) -> str:
+    options = []
+    for source in (summary, details):
+        raw_options = source.get("buyingOptions") or []
+        if isinstance(raw_options, str):
+            raw_options = [raw_options]
+        options.extend(str(option).upper() for option in raw_options)
+    has_auction = any("AUCTION" in option for option in options)
+    has_bin = any(option in {"FIXED_PRICE", "BUY_IT_NOW"} or "FIXED" in option or "BUY_IT_NOW" in option for option in options)
+    has_offer = any("BEST_OFFER" in option or "OFFER" in option for option in options)
+    if has_auction and has_bin:
+        return "auction_and_buy_it_now"
+    if has_auction:
+        return "auction"
+    if has_bin:
+        return "best_offer" if has_offer else "buy_it_now"
+    if has_offer:
+        return "best_offer"
+    return "unknown"
+
+
+def _availability_note(
+    availability_status: str,
+    buying_option_summary: str,
+    summary: dict[str, Any],
+    details: dict[str, Any],
+) -> str:
+    notes = []
+    if availability_status != "unknown":
+        notes.append(f"Availability: {availability_status}")
+    if buying_option_summary != "unknown":
+        notes.append(f"Buying option: {buying_option_summary.replace('_', ' ')}")
+    end_at = summary.get("itemEndDate") or details.get("itemEndDate")
+    if end_at:
+        notes.append(f"Ends: {end_at}")
+    return "; ".join(notes)

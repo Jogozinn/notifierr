@@ -1,9 +1,10 @@
 import json
 from pathlib import Path
 
-from backend.config import load_scoring_rules
+from backend.config import load_resale_research, load_scoring_rules
+from backend.ebay_client import clean_description
 from backend.main import should_notify_item
-from backend.scorer import detect_model, score_listing
+from backend.scorer import detect_model, detect_storage, score_listing
 from backend.storage import Storage
 
 
@@ -60,6 +61,26 @@ def score_sample(name):
     )
 
 
+def test_clean_description_strips_html_entities_and_boilerplate():
+    raw = """
+    <html><body>
+      <style>.x { color: red; }</style>
+      <script>alert("x")</script>
+      <p>Apple iPhone 13 Pro &amp; charger.</p>
+      <div>No IC READ&nbsp;but Face ID works.<br>Clean IMEI verified.</div>
+      <p>Powered by eBay template</p>
+    </body></html>
+    """
+
+    cleaned = clean_description(raw)
+
+    assert cleaned == "Apple iPhone 13 Pro & charger.\nNo IC READ but Face ID works.\nClean IMEI verified."
+    assert "<" not in cleaned
+    assert ">" not in cleaned
+    assert "&amp;" not in cleaned
+    assert "Powered by" not in cleaned
+
+
 def test_hard_reject_overrides_good_signs():
     result = score_listing(
         {
@@ -95,6 +116,26 @@ def test_candidate_when_profit_and_score_clear_thresholds():
     assert result.estimated_profit == 150
     assert result.score >= 70
     assert "cracked_screen" in result.positive_flags
+
+
+def test_detail_risk_phrase_no_ic_read_blocks_best_find():
+    result = score_listing(
+        {
+            "title": "iPhone 14 Pro cracked screen powers on clean IMEI No IC READ",
+            "condition": "For parts or repair",
+            "raw_description": "Face ID works.",
+            "total_cost": 190,
+        },
+        REPAIR_VALUES,
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.status == "risky"
+    assert result.alert_eligible is False
+    assert "no_ic_read" in result.risk_flags
+    assert "No IC READ" in result.manual_review_reason
 
 
 def test_low_profit_listing_is_risky_even_with_positive_signs():
@@ -140,6 +181,57 @@ def test_detect_model_knows_unpriced_modern_models():
 
     for title, expected_model in examples.items():
         assert detect_model(title, repair_values) == expected_model
+
+
+def test_storage_detection_from_title_supported_capacities():
+    examples = {
+        "Apple iPhone 12 64GB Unlocked Cracked Screen": "64GB",
+        "Apple iPhone 13 Pro 128GB Unlocked Cracked Screen": "128GB",
+        "iPhone 13 Pro 256GB": "256GB",
+        "Apple iPhone 14 Pro Max 512GB": "512GB",
+        "Apple iPhone 15 Pro A2848 - Unlocked 1TB": "1TB",
+    }
+
+    for title, expected in examples.items():
+        detected = detect_storage({"title": title})
+        assert detected["storage_capacity"] == expected
+        assert detected["storage_confidence"] == "high"
+        assert detected["storage_source"] == "title"
+
+
+def test_storage_detection_from_spaced_title_and_raw_aspects():
+    spaced = detect_storage({"title": "Apple iPhone 14 Pro 128 GB Cracked Screen"})
+    from_aspects = detect_storage(
+        {
+            "title": "Apple iPhone 14 Pro Cracked Screen",
+            "raw_json": {
+                "details": {
+                    "localizedAspects": [
+                        {"name": "Storage Capacity", "value": "256 GB"},
+                    ]
+                }
+            },
+        }
+    )
+
+    assert spaced["storage_capacity"] == "128GB"
+    assert from_aspects["storage_capacity"] == "256GB"
+    assert from_aspects["storage_source"] == "item_aspects"
+
+
+def test_storage_detection_handles_128gb_title_variants():
+    titles = [
+        "Apple iPhone 14 128GB Blue (Network Unlocked) BH 84% - Cracked Back - For Parts",
+        "Apple iPhone 14 - 128GB Blue",
+        "iPhone 14 128 GB Network Unlocked",
+        "iPhone 14 128gb",
+        "Apple iPhone 14 128GB",
+    ]
+
+    for title in titles:
+        assert detect_storage({"title": title})["storage_capacity"] == "128GB"
+
+    assert detect_storage({"title": "Apple iPhone 14 Blue Network Unlocked"})["storage_capacity"] is None
 
 
 def test_nested_parts_structure_is_used_for_costs():
@@ -820,6 +912,73 @@ def test_vague_for_parts_listing_is_risky_instead_of_alerted():
     assert not should_notify_item(item, result, _settings())
 
 
+def test_for_parts_label_alone_does_not_block_strong_repair_candidate():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 14 128GB Blue Network Unlocked Cracked Back For Parts",
+            "condition": "For parts or not working",
+            "total_cost": 140,
+        },
+        {
+            "iPhone 14": {
+                "resale": {"low": 420, "mid": 500, "high": 580},
+                "risk_buffer": 40,
+                "parts_pricing_status": "verified_screenshot",
+                "parts": {"back_glass": 25},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert "for_parts" in result.risk_flags
+    assert result.status == "candidate"
+    assert result.alert_eligible is True
+
+
+def test_as_is_label_alone_does_not_block_strong_repair_candidate():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 14 128GB Network Unlocked Cracked Screen As-Is",
+            "condition": "Used",
+            "total_cost": 150,
+        },
+        {
+            "iPhone 14": {
+                "resale": {"low": 420, "mid": 500, "high": 580},
+                "risk_buffer": 40,
+                "parts_pricing_status": "verified_screenshot",
+                "parts": {"screen_safe": 60},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert "as_is" in result.risk_flags
+    assert result.status == "candidate"
+    assert result.alert_eligible is True
+
+
+def test_no_power_plus_for_parts_still_hard_rejects():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 14 128GB Cracked Screen No Power For Parts",
+            "condition": "For parts or not working",
+            "total_cost": 50,
+        },
+        {"iPhone 14": {"resale_value": 430, "parts": {"screen_safe": 60}}},
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.status == "rejected"
+    assert "no_power" in result.hard_reject_flags
+
+
 def test_duplicate_items_do_not_notify_twice():
     listing = SAMPLES["cracked_screen_powers_on_unlocked"]
     result = score_sample("cracked_screen_powers_on_unlocked")
@@ -879,6 +1038,270 @@ def test_resale_range_calculates_low_mid_high_profit():
     assert result.resale_confidence == "high"
     assert result.resale_sample_size == 18
     assert result.resale_note == "Sold comps from manual research"
+    assert result.storage_capacity == "128GB"
+    assert result.resale_source == "model_range"
+
+
+def test_resale_by_storage_exact_match_uses_storage_specific_profit_math():
+    repair_values = {
+        "iPhone 13 Pro": {
+            "resale": {"low": 350, "mid": 470, "high": 590},
+            "resale_by_storage": {
+                "128GB": {"low": 330, "mid": 390, "high": 430, "confidence": "manual", "sample_size": 5},
+                "256GB": {"low": 390, "mid": 440, "high": 480, "confidence": "manual", "sample_size": 8},
+            },
+            "risk_buffer": 50,
+            "parts": {"screen_safe": 110},
+        }
+    }
+
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro 256GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 180,
+        },
+        repair_values,
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.storage_capacity == "256GB"
+    assert result.resale_source == "storage_specific"
+    assert result.resale_storage_used == "256GB"
+    assert result.resale_low == 390
+    assert result.resale_mid == 440
+    assert result.resale_high == 480
+    assert result.profit_low == 50
+    assert result.profit_mid == 100
+    assert result.profit_high == 140
+    assert result.estimated_profit == 100
+    assert result.resale_confidence == "manual"
+    assert result.resale_sample_size == 8
+
+
+def test_resale_by_storage_uses_closest_lower_storage_with_warning():
+    repair_values = {
+        "iPhone 15 Pro": {
+            "resale_by_storage": {
+                "128GB": {"low": 520, "mid": 580, "high": 620},
+                "256GB": {"low": 590, "mid": 650, "high": 700},
+            },
+            "risk_buffer": 50,
+            "parts": {"screen_safe": 120},
+        }
+    }
+
+    result = score_listing(
+        {
+            "title": "Apple iPhone 15 Pro 512GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 300,
+        },
+        repair_values,
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.resale_source == "storage_specific"
+    assert result.resale_storage_used == "256GB"
+    assert "closest lower 256GB" in result.storage_resale_warning
+
+
+def test_storage_missing_falls_back_to_model_range_with_warning():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 180,
+        },
+        {
+            "iPhone 13 Pro": {
+                "resale": {"low": 350, "mid": 470, "high": 590},
+                "resale_by_storage": {
+                    "128GB": {"low": 330, "mid": 390, "high": 430},
+                },
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 110},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.storage_capacity is None
+    assert result.resale_source == "model_range"
+    assert result.resale_storage_used is None
+    assert result.storage_resale_warning == "Storage unknown - model-level resale used"
+    assert "Storage unknown - model-level resale used" in result.manual_review_reason
+
+
+def test_missing_resale_research_file_loads_empty(tmp_path):
+    assert load_resale_research(tmp_path / "missing-resale-research.json") == {}
+
+
+def test_resale_research_overrides_repair_values_resale():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro 128GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 150,
+        },
+        {
+            "iPhone 13 Pro": {
+                "resale": {"low": 100, "mid": 120, "high": 140},
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 110},
+            }
+        },
+        resale_research={
+            "iPhone 13 Pro": {
+                "resale": {"low": 350, "mid": 390, "high": 430, "confidence": "research", "sample_size": 7}
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.resale_mid == 390
+    assert result.resale_market_source == "resale_research"
+    assert result.resale_condition_used == "Good"
+    assert result.resale_source == "model_range"
+
+
+def test_repair_values_resale_fallback_still_works_without_research():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro 128GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 150,
+        },
+        {
+            "iPhone 13 Pro": {
+                "resale": {"low": 350, "mid": 390, "high": 430},
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 110},
+            }
+        },
+        resale_research={},
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.resale_mid == 390
+    assert result.resale_market_source == "repair_values"
+
+
+def test_resale_research_storage_specific_good_condition_drives_scoring():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro 256GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 180,
+        },
+        {
+            "iPhone 13 Pro": {
+                "resale": {"low": 100, "mid": 120, "high": 140},
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 110},
+            }
+        },
+        resale_research={
+            "iPhone 13 Pro": {
+                "resale_by_storage": {
+                    "256GB": {
+                        "good": {"low": 390, "mid": 440, "high": 480},
+                        "mint": {"low": 440, "mid": 500, "high": 560},
+                        "confidence": "research",
+                        "sample_size": 8,
+                    }
+                }
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.resale_source == "storage_specific"
+    assert result.resale_market_source == "resale_research"
+    assert result.resale_condition_used == "Good"
+    assert result.resale_storage_used == "256GB"
+    assert result.estimated_profit == 100
+    assert result.mint_profit_high == 220
+
+
+def test_mint_resale_is_upside_only_and_does_not_make_alert_eligible():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro 128GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 200,
+        },
+        {
+            "iPhone 13 Pro": {
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 110},
+            }
+        },
+        resale_research={
+            "iPhone 13 Pro": {
+                "resale_by_storage": {
+                    "128GB": {
+                        "good": {"low": 320, "mid": 350, "high": 370},
+                        "mint": {"low": 440, "mid": 480, "high": 520},
+                    }
+                }
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.estimated_profit == -10
+    assert result.mint_profit_high == 160
+    assert result.alert_eligible is False
+    assert result.status == "risky"
+    assert "Profit depends on mint resale" in result.manual_review_reason
+
+
+def test_research_missing_storage_uses_model_level_research_before_repair_values():
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 Pro Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 180,
+        },
+        {
+            "iPhone 13 Pro": {
+                "resale": {"low": 250, "mid": 300, "high": 350},
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 110},
+            }
+        },
+        resale_research={
+            "iPhone 13 Pro": {
+                "resale_by_storage": {
+                    "128GB": {"good": {"low": 330, "mid": 390, "high": 430}},
+                },
+                "resale": {"good": {"low": 360, "mid": 420, "high": 470}},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.storage_capacity is None
+    assert result.resale_mid == 420
+    assert result.resale_market_source == "resale_research"
+    assert result.storage_resale_warning == "Storage unknown - model-level resale used"
 
 
 def test_legacy_resale_value_still_sets_expected_profit():
@@ -907,6 +1330,7 @@ def test_legacy_resale_value_still_sets_expected_profit():
     assert result.resale_high == 430
     assert result.estimated_profit == 140
     assert result.profit_mid == 140
+    assert result.resale_source == "legacy_resale_value"
 
 
 def test_missing_resale_range_and_value_remains_unavailable():
@@ -938,6 +1362,7 @@ def test_missing_resale_range_and_value_remains_unavailable():
     assert result.profit_mid == 0
     assert result.profit_high == 0
     assert result.pricing_warning == "Estimated profit unavailable — resale value missing"
+    assert result.resale_source == "missing"
 
 
 def test_score_result_serializes_resale_range_fields_for_api_consumers():
@@ -969,6 +1394,16 @@ def test_score_result_serializes_resale_range_fields_for_api_consumers():
     assert fields["resale_confidence"] == "medium"
     assert fields["resale_sample_size"] == 9
     assert fields["resale_note"] == "Manual comps"
+    assert fields["storage_capacity"] == "128GB"
+    assert fields["storage_confidence"] == "high"
+    assert fields["storage_source"] == "title"
+    assert fields["resale_source"] == "model_range"
+    assert fields["resale_market_source"] == "repair_values"
+    assert fields["resale_condition_used"] == "Good"
+    assert fields["resale_storage_used"] is None
+    assert fields["storage_resale_warning"] == ""
+    assert fields["mint_resale_mid"] == 0
+    assert fields["mint_profit_high"] == 0
 
 
 def test_expected_profit_below_model_min_profit_does_not_alert():
@@ -1057,7 +1492,7 @@ def test_optimistic_high_profit_only_goes_to_manual_review():
     assert result.profit_high == 222
     assert result.status == "risky"
     assert result.alert_eligible is False
-    assert "Only optimistic profit clears threshold" in result.manual_review_reason
+    assert "Only upside case works" in result.manual_review_reason
 
 
 def test_low_confidence_pricing_requires_stronger_expected_profit():

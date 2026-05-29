@@ -1,0 +1,47 @@
+{
+  "iPhone 13 Pro": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 330,
+          "mid": 390,
+          "high": 430
+        },
+        "mint": {
+          "low": 390,
+          "mid": 425,
+          "high": 470
+        },
+        "confidence": "manual_sold_comps",
+        "sample_size": 12,
+        "updated_at": "2026-05-25",
+        "notes": "Example only. Use Good for expected profit; Mint is upside only."
+      },
+      "256GB": {
+        "low": 390,
+        "mid": 440,
+        "high": 480,
+        "confidence": "manual_sold_comps",
+        "sample_size": 8,
+        "updated_at": "2026-05-25",
+        "notes": "Flat storage-specific range without condition split."
+      }
+    },
+    "resale": {
+      "good": {
+        "low": 350,
+        "mid": 420,
+        "high": 470
+      },
+      "mint": {
+        "low": 430,
+        "mid": 480,
+        "high": 540
+      },
+      "confidence": "manual_sold_comps",
+      "sample_size": 20,
+      "updated_at": "2026-05-25",
+      "notes": "Model-level fallback when storage is missing."
+    }
+  }
+}
