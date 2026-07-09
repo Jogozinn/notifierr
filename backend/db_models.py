@@ -356,6 +356,104 @@ shared_scan_results = sa.Table(
 )
 
 
+scan_cycles = sa.Table(
+    "scan_cycles",
+    metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("mode", sa.Text(), nullable=False),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="SET NULL")),
+    sa.Column("started_at", sa.Text(), nullable=False),
+    sa.Column("finished_at", sa.Text()),
+    sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'started'")),
+    sa.Column("skip_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("error_message", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("source", sa.Text()),
+    sa.Column("error_category", sa.Text()),
+    sa.Column("http_status", sa.Integer()),
+    sa.Column("cooldown_until", sa.Text()),
+    sa.Column("retry_after_seconds", sa.Integer()),
+    sa.Column("process_id", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("hostname", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("auth_required", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("background_poll_enabled", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("background_poll_seconds", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("active_window_start", sa.Text()),
+    sa.Column("active_window_end", sa.Text()),
+    sa.Column("active_window_timezone", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("users_considered", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("users_scanned", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("keywords_searched", sa.Text(), nullable=False, server_default=sa.text("'[]'")),
+    sa.Column("sources_checked", sa.Text(), nullable=False, server_default=sa.text("'[]'")),
+    sa.Column("items_found", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("new_items_found", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("duplicate_items", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("items_scored", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("alerts_attempted", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("alerts_sent", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("alerts_failed", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("final_bucket_counts", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
+    sa.Column("alert_block_reason_counts", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
+    sa.Column("missing_data_reason_counts", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
+    sa.Column("risk_flag_counts", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
+    sa.Column("model_detection_failure_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("resale_missing_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("parts_pricing_status_counts", sa.Text(), nullable=False, server_default=sa.text("'{}'")),
+    *_timestamp_columns(),
+)
+
+
+worker_heartbeats = sa.Table(
+    "worker_heartbeats",
+    metadata,
+    sa.Column("worker_name", sa.Text(), primary_key=True),
+    sa.Column("process_id", sa.Integer(), nullable=False),
+    sa.Column("hostname", sa.Text(), nullable=False),
+    sa.Column("started_at", sa.Text(), nullable=False),
+    sa.Column("last_seen_at", sa.Text(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("last_cycle_id", sa.Integer(), sa.ForeignKey("scan_cycles.id", ondelete="SET NULL")),
+    sa.Column("last_error", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("next_wake_at", sa.Text()),
+    *_timestamp_columns(),
+)
+
+
+listing_decision_traces = sa.Table(
+    "listing_decision_traces",
+    metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("marketplace_item_id", sa.Integer(), sa.ForeignKey("marketplace_items.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("scan_cycle_id", sa.Integer(), sa.ForeignKey("scan_cycles.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("trace_json", sa.Text(), nullable=False),
+    sa.Column("created_at", sa.Text(), nullable=False),
+    sa.UniqueConstraint(
+        "user_id",
+        "marketplace_item_id",
+        "scan_cycle_id",
+        name="uq_listing_decision_traces_user_item_cycle",
+    ),
+)
+
+
+source_statuses = sa.Table(
+    "source_statuses",
+    metadata,
+    sa.Column("source", sa.Text(), primary_key=True),
+    sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'ok'")),
+    sa.Column("cooldown_until", sa.Text()),
+    sa.Column("last_success_at", sa.Text()),
+    sa.Column("last_failure_at", sa.Text()),
+    sa.Column("last_http_status", sa.Integer()),
+    sa.Column("last_error_category", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("last_error_message", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("last_keyword", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("last_item_id", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("retry_after_seconds", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    *_timestamp_columns(),
+)
+
+
 user_usage_daily = sa.Table(
     "user_usage_daily",
     metadata,
@@ -412,6 +510,11 @@ sa.Index("idx_shared_scan_runs_finished_at", shared_scan_runs.c.finished_at)
 sa.Index("idx_shared_scan_searches_run_id", shared_scan_searches.c.scan_run_id)
 sa.Index("idx_shared_scan_searches_signature", shared_scan_searches.c.search_signature)
 sa.Index("idx_shared_scan_results_search_id", shared_scan_results.c.scan_search_id)
+sa.Index("idx_scan_cycles_started_at", scan_cycles.c.started_at)
+sa.Index("idx_scan_cycles_status", scan_cycles.c.status)
+sa.Index("idx_scan_cycles_user_id", scan_cycles.c.user_id)
+sa.Index("idx_listing_decision_traces_cycle", listing_decision_traces.c.scan_cycle_id)
+sa.Index("idx_listing_decision_traces_user_item", listing_decision_traces.c.user_id, listing_decision_traces.c.marketplace_item_id)
 sa.Index("idx_user_usage_daily_date", user_usage_daily.c.usage_date)
 
 
@@ -433,6 +536,10 @@ CORE_TABLES = {
         shared_scan_runs,
         shared_scan_searches,
         shared_scan_results,
+        scan_cycles,
+        worker_heartbeats,
+        listing_decision_traces,
+        source_statuses,
         user_usage_daily,
     )
 }
@@ -451,4 +558,6 @@ SERIAL_ID_TABLES = [
     shared_scan_runs.name,
     shared_scan_searches.name,
     shared_scan_results.name,
+    scan_cycles.name,
+    listing_decision_traces.name,
 ]

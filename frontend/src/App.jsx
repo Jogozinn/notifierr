@@ -52,6 +52,18 @@ const TABS = {
 
 const PRIORITY_REVIEW_MIN_PROFIT = 37.5;
 const PRIORITY_REVIEW_UPSIDE = 75;
+const REVIEWABLE_PRICING_REASONS = [
+  "Expected profit below threshold",
+  "Only upside case works",
+  "Low-confidence pricing needs stronger profit",
+  "Too cheap without proof",
+  "Profit depends on mint resale",
+  "Missing part price",
+  "Parts estimate not verified",
+  "Low-confidence pricing",
+  "Pricing confidence prevents Best Pick",
+  "Reviewable despite parts/pricing gap",
+];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("priority_review");
@@ -1118,6 +1130,7 @@ function isPriorityReviewItem(item) {
       item.estimated_parts_cost_available === false
       && Number(item.resale_mid || item.resale_value || 0) > 0
     )
+    || isReviewableDespitePricingGap(item)
   );
 }
 
@@ -1129,6 +1142,9 @@ function isNeedsDataItem(item) {
     return false;
   }
   if (item.stale === true) {
+    return false;
+  }
+  if (isPriorityReviewItem(item) || isReviewableDespitePricingGap(item)) {
     return false;
   }
   return (
@@ -1153,6 +1169,46 @@ function isNeedsDataItem(item) {
       "No specific repair issue detected",
     ])
   );
+}
+
+function hasReviewableDescriptionEvidence(item) {
+  const proofFlags = new Set(item.positive_flags || []);
+  const classificationFlags = new Set(item.listing_classification_flags || []);
+  const strongProofCount = ["powers_on", "clean_imei", "face_id_works", "unlocked"]
+    .filter((flag) => proofFlags.has(flag)).length;
+  const hasRawDetail = Boolean((item.raw_description || "").trim());
+  const hasDescriptionEvidence = [
+    "description_functionality_evidence",
+    "normal_accessory_exclusions",
+  ].some((flag) => classificationFlags.has(flag))
+    || (classificationFlags.has("description_whole_phone_evidence") && hasRawDetail);
+  return item.whole_phone_confidence_passed === true
+    && item.has_repair_issue === true
+    && hasKnownModel(item)
+    && Boolean(item.storage_capacity)
+    && (
+      strongProofCount >= 2
+      || (strongProofCount >= 1 && hasDescriptionEvidence)
+      || (hasDescriptionEvidence && Number(item.whole_phone_confidence_score || 0) >= 7)
+    );
+}
+
+function isReviewableDespitePricingGap(item) {
+  if (!hasReviewableDescriptionEvidence(item)) {
+    return false;
+  }
+  if (hasExcludedHardReject(item) || isAccessoryOrPartListing(item)) {
+    return false;
+  }
+  if (usesModelResaleWithoutStorage(item) && !storageFallbackPriorityException(item)) {
+    return false;
+  }
+  if (Number(item.resale_value || item.resale_mid || 0) <= 0) {
+    return false;
+  }
+  return item.estimated_parts_cost_available === false
+    || item.estimated_profit_available === false
+    || hasManualReason(item, REVIEWABLE_PRICING_REASONS);
 }
 
 function usesModelResaleWithoutStorage(item) {

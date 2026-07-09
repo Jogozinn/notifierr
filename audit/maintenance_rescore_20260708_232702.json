@@ -1,0 +1,89 @@
+{
+  "alert_eligibility_changes": 0,
+  "alert_eligible_false_to_true": 0,
+  "alert_eligible_true_to_false": 0,
+  "candidates_downgraded": 0,
+  "dry_run": true,
+  "mode": "maintenance_rescore",
+  "needs_data_changed": 0,
+  "reason": "description extraction validation dry run",
+  "rejected_changed": 0,
+  "risky_downgraded": 0,
+  "risky_upgraded": 0,
+  "sample_changed_rows": [
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|158067232486|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Low-confidence pricing needs stronger profit; Profit depends on mint resale; High-resale model needs stronger verification; Parts estimate not verified",
+      "persisted_score": 100.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; High-resale model needs stronger verification; Parts estimate not verified",
+      "rescored_score": 100.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 16 - 128GB - Pink (T-Mobile) -Non OEM -  Cracked Screen"
+    },
+    {
+      "changed_reasons": [],
+      "confidence": 12.0,
+      "item_id": "v1|298490998367|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 58.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Parts estimate not verified; Low-confidence pricing",
+      "rescored_score": 80.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 15 Pro 256GB Blue Titanium UNLOCKED (Cracked screen, phone works)"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 9.0,
+      "item_id": "v1|307050354805|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Only upside case works; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 73.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "rescored_score": 78.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 15 - 128GB - Green (Unlocked) - CRACKED BACK, NON OEM SCREEN"
+    },
+    {
+      "changed_reasons": [],
+      "confidence": 9.0,
+      "item_id": "v1|127964300103|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 64.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "rescored_score": 98.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 13 128GB Black Damaged Cracked Screen DOES STILL WORK ~  For Parts?"
+    }
+  ],
+  "scan_cycle_id": null,
+  "score_changes": 3,
+  "skipped_count": 157,
+  "skipped_reasons": {
+    "inactive_filtered": 153,
+    "include_filter_excluded": 4
+  },
+  "status_changes": 0,
+  "total_rescored": 6,
+  "total_selected": 6,
+  "unchanged_count": 2,
+  "write": false,
+  "write_traces": false,
+  "written_count": 0
+}

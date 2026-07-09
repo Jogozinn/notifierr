@@ -362,6 +362,123 @@ select {
   margin-top: 22px;
 }
 
+.replay-settings-grid textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.replay-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.replay-preset-row span {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.toggle-row {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.toggle-row span {
+  margin: 0 !important;
+}
+
+.replay-actions {
+  align-items: center;
+  margin-top: 14px;
+}
+
+.replay-safety-text {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
+.replay-safety-text span {
+  padding: 6px 8px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.replay-status {
+  margin-top: 14px;
+}
+
+.replay-stat-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.replay-preview {
+  max-width: 100%;
+  overflow: auto;
+  margin-top: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+.replay-preview table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.replay-preview th,
+.replay-preview td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.replay-preview th {
+  color: var(--text-muted);
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.replay-preview td {
+  color: var(--text-soft);
+}
+
+.mono-cell {
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
+.raw-json-block {
+  max-height: 360px;
+  overflow: auto;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: rgba(0, 0, 0, 0.24);
+  color: var(--text-soft);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+}
+
+.replay-payload-preview {
+  max-height: 220px;
+}
+
 .settings-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

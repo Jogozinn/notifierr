@@ -3,8 +3,8 @@ from pathlib import Path
 
 from backend.config import load_resale_research, load_scoring_rules
 from backend.ebay_client import clean_description
-from backend.main import should_notify_item
-from backend.scorer import detect_model, detect_storage, score_listing
+from backend.main import _build_decision_trace, should_notify_item
+from backend.scorer import detect_model, detect_storage, extract_description_signals, score_listing
 from backend.storage import Storage
 
 
@@ -1604,6 +1604,583 @@ def test_more_display_only_parts_are_rejected_or_suppressed():
         assert result.status == "rejected"
         assert result.whole_phone_confidence_passed is False
         assert "screen_part_not_phone" in result.hard_reject_flags
+
+
+def test_high_confidence_screen_component_phrases_are_rejected():
+    repair_values = {
+        "iPhone 14": {"resale_value": 430, "risk_buffer": 50, "parts": {"screen_safe": 90}},
+        "iPhone 16": {"resale_value": 700, "risk_buffer": 50, "parts": {"screen_safe": 140}},
+        "iPhone 15 Pro Max": {"resale_value": 900, "risk_buffer": 60, "parts": {"screen_safe": 180}},
+        "iPhone X": {"resale_value": 180, "risk_buffer": 40, "parts": {"screen_safe": 80}},
+    }
+    samples = [
+        "OEM Apple iPhone 16 Screen Display Assembly Cracked Glass Good OLED Touch Works",
+        "OEM Apple iPhone 14 Screen Display Assembly Cracked Glass Good OLED Touch Works",
+        "OEM screen assembly for iPhone 14",
+        "Apple iPhone X oem cracked screen OLED only parts READ",
+        "replacement display assembly for iPhone 16",
+        "replacement screen for iPhone 14",
+        "screen for iPhone 15 Pro Max",
+    ]
+
+    for title in samples:
+        result = score_listing(
+            {"title": title, "condition": "For parts or not working", "total_cost": 80},
+            repair_values,
+            scoring_rules=SCORING_RULES,
+            min_score_to_alert=70,
+            min_profit_to_alert=75,
+        )
+
+        assert result.status == "rejected"
+        assert result.alert_eligible is False
+        assert result.whole_phone_confidence_passed is False
+        assert "screen_part_not_phone" in result.hard_reject_flags
+        assert "Screen/display part listing" in result.manual_review_reason
+
+
+def test_description_saying_phone_not_included_rejects_display_part_listing():
+    descriptions = [
+        "Pulled from a working phone. Touch works. Phone is not included.",
+        "This is for flex parts only. No phone included.",
+    ]
+
+    for description in descriptions:
+        result = score_listing(
+            {
+                "title": "Apple iPhone 14 oem cracked screen parts Read bad OLED",
+                "condition": "For parts or not working",
+                "raw_description": description,
+                "total_cost": 40,
+            },
+            {
+                "iPhone 14": {
+                    "resale": {"low": 280, "mid": 337, "high": 410},
+                    "risk_buffer": 70,
+                    "parts_pricing_status": "verified_screenshot",
+                    "parts": {"screen_safe": 44},
+                }
+            },
+            scoring_rules=SCORING_RULES,
+            min_score_to_alert=70,
+            min_profit_to_alert=75,
+        )
+
+        assert result.status == "rejected"
+        assert result.alert_eligible is False
+        assert "screen_part_not_phone" in result.hard_reject_flags
+        assert "Screen/display part listing" in result.manual_review_reason
+
+
+def test_whole_phone_screen_repair_titles_are_not_component_rejected():
+    repair_values = {
+        "iPhone 14": {"resale": {"low": 300, "mid": 420, "high": 500}, "risk_buffer": 50, "parts_pricing_status": "verified_screenshot", "parts": {"screen_safe": 90}},
+        "iPhone 16": {"resale": {"low": 520, "mid": 640, "high": 760}, "risk_buffer": 60, "parts_pricing_status": "verified_screenshot", "parts": {"screen_safe": 140}},
+        "iPhone 15": {"resale": {"low": 380, "mid": 480, "high": 560}, "risk_buffer": 50, "parts_pricing_status": "verified_screenshot", "parts": {"back_glass": 60}},
+        "iPhone 13": {"resale": {"low": 240, "mid": 330, "high": 400}, "risk_buffer": 50, "parts_pricing_status": "verified_screenshot", "parts": {"screen_safe": 80}},
+    }
+    samples = [
+        "Apple iPhone 15 128GB Green Unlocked CRACKED BACK NON OEM SCREEN",
+        "iPhone 14 cracked screen bad OLED for parts",
+        "iPhone 13 cracked screen DOES STILL WORK For Parts?",
+        "iPhone 16 128GB T-Mobile cracked screen clean IMEI non-OEM screen",
+        "iPhone 15 cracked back as-is",
+        "iPhone 13 bad screen powers on",
+        "iPhone 12 screen does not work, phone still turns on",
+    ]
+
+    for title in samples:
+        result = score_listing(
+            {"title": title, "condition": "For parts or not working", "total_cost": 220},
+            repair_values,
+            scoring_rules=SCORING_RULES,
+            min_score_to_alert=70,
+            min_profit_to_alert=75,
+        )
+
+        assert result.status != "rejected"
+        assert not any(flag.endswith("_not_phone") for flag in result.hard_reject_flags)
+
+
+def test_paymore_template_description_extracts_whole_phone_and_functional_signals():
+    description = """
+    Items included in this sale: Broken Unlocked Apple iPhone 15 Pro Max 256GB MU673LL/A Read
+    Specifications: Brand Apple Model iPhone 15 Pro Max Storage Size 256GB Lock Status Factory Unlocked
+    Carrier Service Unlocked IMEI 359081510922047 Battery Health 84% Replaced Parts? No
+    Cosmetic Condition: The back glass is cracked/damaged. The cameras are in good shape.
+    Functionality condition: Both the front and rear cameras are fully functional with no issues.
+    The Face ID functions properly and is ready to be set up. The LCD/OLED has no issues or damage.
+    The Digitizer (Touch Screen) responds to touch and is fully functional. The WiFi abilities are available.
+    This iPhone has a clean IMEI and is ready to be activated. The charge port is clean and fully functional.
+    Shipping Info: no box or anything else included, such as power cables or other accessories.
+    """
+    result = score_listing(
+        {
+            "title": "Broken Unlocked Apple iPhone 15 Pro Max 256GB MU673LL/A Read",
+            "condition": "For parts or not working",
+            "raw_description": description,
+            "total_cost": 450,
+        },
+        {
+            "iPhone 15 Pro Max": {
+                "resale": {"low": 720, "mid": 850, "high": 980},
+                "risk_buffer": 80,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"back_glass": 85},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    signals = extract_description_signals(
+        {
+            "title": "Broken Unlocked Apple iPhone 15 Pro Max 256GB MU673LL/A Read",
+            "raw_description": description,
+        }
+    )
+
+    assert result.status != "rejected"
+    assert result.whole_phone_confidence_passed is True
+    assert {"back_glass_cracked", "unlocked", "clean_imei", "face_id_works"}.issubset(result.positive_flags)
+    assert "included_device_signals" in signals
+    assert signals["included_device_signals"]
+    assert {"battery_health", "face_id_works", "cameras_functional", "touch_functional", "display_functional", "charge_port_functional"}.issubset(
+        set(signals["functionality_signals"])
+    )
+    assert signals["normal_not_included_accessory_list"]
+    assert not result.hard_reject_flags
+
+
+def test_description_included_device_and_normal_not_included_accessories_are_not_component_reject():
+    description = """
+    Included: Device
+    NOT Included: SIM Card Charger Headphones Original Box
+    Condition Rating: Broken. The device's back glass is cracked.
+    A non-OEM screen replacement has been detected. Battery health percentage: 80%.
+    """
+    result = score_listing(
+        {
+            "title": "Apple iPhone 15 - 128GB - Green (Unlocked) - CRACKED BACK, NON OEM SCREEN",
+            "condition": "For parts or not working",
+            "raw_description": description,
+            "total_cost": 250,
+        },
+        {
+            "iPhone 15": {
+                "resale": {"low": 380, "mid": 480, "high": 560},
+                "risk_buffer": 50,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"back_glass": 60},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    signals = extract_description_signals({"title": "Apple iPhone 15", "raw_description": description})
+
+    assert result.status != "rejected"
+    assert not any(flag.endswith("_not_phone") for flag in result.hard_reject_flags)
+    assert "back_glass_cracked" in result.positive_flags
+    assert "screen_display_issue" in result.positive_flags
+    assert signals["included_device_signals"] == ["included_device"]
+    assert signals["normal_not_included_accessory_list"]
+    assert not signals["component_reject_signals"]
+
+
+def test_whole_phone_working_language_and_aspects_add_functional_and_unlocked_evidence():
+    raw_json = {
+        "details": {
+            "localizedAspects": [
+                {"name": "Network", "value": "Unlocked"},
+                {"name": "Model", "value": "Apple iPhone 13"},
+                {"name": "Storage Capacity", "value": "128 GB"},
+            ],
+            "shortDescription": "WITH THE SCREEN BEING CRACKED I HAD TO LIST UNDER FOR PARTS.",
+            "conditionDescription": "Needs Sim Card",
+        }
+    }
+    result = score_listing(
+        {
+            "title": "Apple iPhone 13 128GB Black Damaged Cracked Screen DOES STILL WORK ~ For Parts?",
+            "condition": "For parts or not working",
+            "raw_description": "WITH THE SCREEN BEING CRACKED I HAD TO LIST UNDER FOR PARTS. Needs Sim Card to use.",
+            "raw_json": raw_json,
+            "total_cost": 139,
+        },
+        {
+            "iPhone 13": {
+                "resale": {"low": 240, "mid": 330, "high": 400},
+                "risk_buffer": 50,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"screen_safe": 80},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.status != "rejected"
+    assert "cracked_screen" in result.positive_flags
+    assert "powers_on" in result.positive_flags
+    assert "unlocked" in result.positive_flags
+    assert result.whole_phone_confidence_passed is True
+
+
+def test_component_only_description_guardrails_still_reject():
+    repair_values = {
+        "iPhone 14": {"resale": {"low": 280, "mid": 337, "high": 410}, "risk_buffer": 70, "parts": {"screen_safe": 44}},
+        "iPhone 16": {"resale": {"low": 520, "mid": 640, "high": 760}, "risk_buffer": 60, "parts": {"screen_safe": 140}},
+    }
+    samples = [
+        ("Apple iPhone 14 oem cracked screen parts Read bad OLED", "Phone is not included."),
+        ("Apple iPhone 14 oem cracked screen parts Read bad OLED", "For flex parts only."),
+        ("Apple iPhone 14 oem cracked screen parts Read bad OLED", "OLED only."),
+        ("OEM Apple iPhone 16 Screen Display Assembly Cracked Glass Good OLED Touch Works", ""),
+        ("Apple iPhone 16 display assembly replacement screen", ""),
+    ]
+
+    for title, description in samples:
+        result = score_listing(
+            {"title": title, "condition": "For parts or not working", "raw_description": description, "total_cost": 80},
+            repair_values,
+            scoring_rules=SCORING_RULES,
+            min_score_to_alert=70,
+            min_profit_to_alert=75,
+        )
+
+        assert result.status == "rejected"
+        assert result.alert_eligible is False
+        assert result.whole_phone_confidence_passed is False
+        assert any(flag.endswith("_not_phone") for flag in result.hard_reject_flags)
+
+
+def test_decision_trace_exposes_description_extraction_signal_groups():
+    listing = {
+        "item_id": "trace-description-signals",
+        "title": "Broken Unlocked Apple iPhone 13 128GB Bad Battery",
+        "condition": "For parts or not working",
+        "raw_description": """
+        Items included in this sale: Broken Unlocked Apple iPhone 13 128GB Bad Battery.
+        Functionality condition: Face ID works, cameras are fully functional, LCD/OLED has no issues,
+        touch screen is fully functional, the charge port is clean and fully functional.
+        This iPhone has a clean IMEI and is ready to be activated. Battery Health 84%.
+        """,
+        "total_cost": 180,
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 13": {
+                "resale": {"low": 240, "mid": 330, "high": 400},
+                "risk_buffer": 50,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"battery": 30},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    trace = _build_decision_trace({**listing, **result.as_item_fields()}, result, _settings(), scan_cycle_id=321)
+    detected = trace["detected"]
+
+    assert detected["included_device_signals"]
+    assert detected["functionality_signals"]
+    assert detected["clean_activation_signals"]
+    assert detected["repair_detail_signals"]
+    assert detected["description_signals"]["included_device_signals"] == detected["included_device_signals"]
+
+
+def test_high_resale_new_model_with_rough_pricing_does_not_alert():
+    result = score_listing(
+        {
+            "item_id": "new-model-rough",
+            "title": "iPhone 17 Pro 512GB Cracked Screen Apple Limited Warranty Until October",
+            "condition": "For parts or not working",
+            "total_cost": 795,
+        },
+        {
+            "iPhone 17 Pro": {
+                "resale": {"low": 1180, "mid": 1300, "high": 1450},
+                "risk_buffer": 110,
+                "parts_pricing_status": "manual_part_update",
+                "parts": {"screen_safe": 103},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.profit_mid > 0
+    assert result.status == "risky"
+    assert result.alert_eligible is False
+    assert "High-resale model needs stronger verification" in result.manual_review_reason
+
+
+def test_storage_unknown_verified_low_price_routes_to_review_trace_not_dead_end_needs_data():
+    listing = {
+        "item_id": "storage-unknown-review",
+        "title": "Apple iPhone 14 oem cracked screen parts Read bad OLED",
+        "condition": "For parts or not working",
+        "total_cost": 40,
+        "price": 40,
+        "shipping": 0,
+        "user_status": "new",
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 14": {
+                "resale": {"low": 280, "mid": 337, "high": 410},
+                "risk_buffer": 70,
+                "parts_pricing_status": "verified_screenshot",
+                "parts": {"screen_safe": 44},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    item = {**listing, **result.as_item_fields()}
+    trace = _build_decision_trace(item, result, _settings(), scan_cycle_id=123)
+
+    assert result.alert_eligible is False
+    assert trace["verdict"]["normalized_bucket"] == "good"
+    assert trace["detected"]["carrier_status"] == "unknown"
+    assert "storage_unknown" in trace["reasons"]["missing_data"]
+    assert "carrier_unknown" in trace["reasons"]["missing_data"]
+
+
+def test_included_phone_clean_imei_functional_cracked_screen_routes_priority_review_not_needs_data():
+    listing = {
+        "item_id": "paymore-style-review",
+        "title": "Apple iPhone 14 128GB Unlocked Cracked Screen Clean IMEI",
+        "condition": "For parts or not working",
+        "raw_description": """
+        What's Included: Phone. This device has a cracked screen.
+        It has been fully tested, charges, powers on, and has a clean IMEI.
+        """,
+        "total_cost": 285,
+        "price": 285,
+        "shipping": 0,
+        "user_status": "new",
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 14": {
+                "resale": {"low": 280, "mid": 350, "high": 410},
+                "risk_buffer": 65,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"screen_safe": 80},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    trace = _build_decision_trace({**listing, **result.as_item_fields()}, result, _settings(), scan_cycle_id=124)
+
+    assert result.status == "risky"
+    assert result.alert_eligible is False
+    assert trace["verdict"]["normalized_bucket"] == "good"
+    assert trace["verdict"]["normalized_bucket"] != "needs_data"
+    assert "Description supports whole-phone review" in result.manual_review_reason
+    assert "Pricing confidence prevents Best Pick" in result.manual_review_reason
+    assert "Reviewable despite parts/pricing gap" in result.manual_review_reason
+
+
+def test_does_still_work_cracked_screen_unlocked_routes_to_review_not_needs_data():
+    listing = {
+        "item_id": "does-still-work-review",
+        "title": "iPhone 13 128GB Unlocked cracked screen DOES STILL WORK For Parts",
+        "condition": "For parts or not working",
+        "total_cost": 230,
+        "price": 230,
+        "shipping": 0,
+        "user_status": "new",
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 13": {
+                "resale": {"low": 240, "mid": 330, "high": 390},
+                "risk_buffer": 70,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"screen_safe": 90},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    trace = _build_decision_trace({**listing, **result.as_item_fields()}, result, _settings(), scan_cycle_id=125)
+
+    assert result.status == "risky"
+    assert result.alert_eligible is False
+    assert trace["verdict"]["normalized_bucket"] in {"good", "watch"}
+    assert trace["verdict"]["normalized_bucket"] != "needs_data"
+
+
+def test_included_device_normal_accessory_exclusions_route_to_review_not_component_reject():
+    listing = {
+        "item_id": "included-device-review",
+        "title": "Apple iPhone 15 128GB Green Unlocked CRACKED BACK NON OEM SCREEN",
+        "condition": "For parts or not working",
+        "raw_description": """
+        Included: Device. Not included: SIM card, charger, headphones, or box.
+        The back glass is cracked and the screen has been replaced with a non OEM screen.
+        """,
+        "total_cost": 440,
+        "price": 440,
+        "shipping": 0,
+        "user_status": "new",
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 15": {
+                "resale": {"low": 420, "mid": 520, "high": 650},
+                "risk_buffer": 85,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"back_glass": 90, "screen_safe": 120},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    trace = _build_decision_trace({**listing, **result.as_item_fields()}, result, _settings(), scan_cycle_id=126)
+
+    assert result.status == "risky"
+    assert result.alert_eligible is False
+    assert not any(flag.endswith("_not_phone") for flag in result.hard_reject_flags)
+    assert "normal_accessory_exclusions" in result.listing_classification_flags
+    assert trace["verdict"]["normalized_bucket"] in {"good", "watch"}
+    assert trace["verdict"]["normalized_bucket"] != "needs_data"
+
+
+def test_missing_raw_description_unknown_issue_stays_needs_data():
+    listing = {
+        "item_id": "missing-description-unknown-issue",
+        "title": "Apple iPhone 14 128GB for parts",
+        "condition": "For parts or not working",
+        "total_cost": 150,
+        "price": 150,
+        "shipping": 0,
+        "user_status": "new",
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 14": {
+                "resale": {"low": 280, "mid": 350, "high": 410},
+                "risk_buffer": 65,
+                "parts_pricing_status": "verified_screenshot",
+                "parts": {"screen_safe": 80},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    trace = _build_decision_trace({**listing, **result.as_item_fields()}, result, _settings(), scan_cycle_id=127)
+
+    assert result.alert_eligible is False
+    assert trace["verdict"]["normalized_bucket"] == "needs_data"
+    assert "Parts-only ambiguous" in result.manual_review_reason
+
+
+def test_reviewable_low_confidence_pricing_does_not_become_best_pick_or_alert():
+    listing = {
+        "item_id": "reviewable-low-confidence-not-best-pick",
+        "title": "Apple iPhone 16 128GB T-Mobile cracked screen clean IMEI non-OEM screen",
+        "condition": "For parts or not working",
+        "raw_description": "Phone is included. It powers on and has a clean IMEI.",
+        "total_cost": 560,
+        "price": 560,
+        "shipping": 0,
+        "user_status": "new",
+    }
+    result = score_listing(
+        listing,
+        {
+            "iPhone 16": {
+                "resale": {"low": 560, "mid": 680, "high": 780},
+                "risk_buffer": 100,
+                "parts_pricing_status": "manual_part_update",
+                "parts": {"screen_safe": 120},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    trace = _build_decision_trace({**listing, **result.as_item_fields()}, result, _settings(), scan_cycle_id=128)
+
+    assert result.status == "risky"
+    assert result.alert_eligible is False
+    assert trace["verdict"]["normalized_bucket"] != "gem"
+    assert trace["verdict"]["normalized_bucket"] in {"good", "watch"}
+
+
+def test_accessory_component_phrase_still_rejects_after_review_routing_patch():
+    result = score_listing(
+        {
+            "item_id": "component-still-rejected",
+            "title": "OEM Apple iPhone 16 Screen Display Assembly Cracked Glass Good OLED Touch Works",
+            "condition": "For parts or not working",
+            "total_cost": 80,
+            "user_status": "new",
+        },
+        {
+            "iPhone 16": {
+                "resale": {"low": 560, "mid": 680, "high": 780},
+                "risk_buffer": 100,
+                "parts_pricing_status": "manual_part_update",
+                "parts": {"screen_safe": 120},
+            }
+        },
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.status == "rejected"
+    assert result.alert_eligible is False
+    assert any(flag.endswith("_not_phone") for flag in result.hard_reject_flags)
+
+
+def test_carrier_unknown_does_not_hard_reject_but_lock_terms_still_reject():
+    carrier_unknown = score_listing(
+        {
+            "title": "Apple iPhone 14 128GB Cracked Screen Clean IMEI",
+            "condition": "For parts or not working",
+            "total_cost": 170,
+        },
+        {"iPhone 14": {"resale_value": 430, "risk_buffer": 60, "parts_pricing_status": "verified_screenshot", "parts": {"screen_safe": 80}}},
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    locked = score_listing(
+        {
+            "title": "Apple iPhone 14 128GB Cracked Screen Locked To Owner",
+            "condition": "For parts or not working",
+            "total_cost": 170,
+        },
+        {"iPhone 14": {"resale_value": 430, "risk_buffer": 60, "parts": {"screen_safe": 80}}},
+        scoring_rules=SCORING_RULES,
+    )
+
+    assert carrier_unknown.status != "rejected"
+    assert "activation_locked" not in carrier_unknown.hard_reject_flags
+    assert locked.status == "rejected"
+    assert "activation_locked" in locked.hard_reject_flags
 
 
 def test_real_whole_phone_screen_line_and_bad_lcd_titles_still_pass():

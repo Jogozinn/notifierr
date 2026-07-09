@@ -97,6 +97,7 @@ class Settings:
     ebay_api_base: str = "https://api.ebay.com"
     ebay_oauth_url: str = "https://api.ebay.com/identity/v1/oauth2/token"
     ebay_fetch_descriptions: bool = False
+    ebay_rate_limit_backoff_seconds: int = 900
     discord_webhook_url: Optional[str] = None
     sqlite_path: Path = DATA_DIR / "notifierr.sqlite3"
     repair_values_path: Path = DEFAULT_REPAIR_VALUES_PATH
@@ -149,6 +150,7 @@ class Settings:
             "discord_configured": self.discord_configured,
             "ebay_marketplace_id": self.ebay_marketplace_id,
             "ebay_fetch_descriptions": self.ebay_fetch_descriptions,
+            "ebay_rate_limit_backoff_seconds": self.ebay_rate_limit_backoff_seconds,
             "sqlite_path": str(self.sqlite_path),
             "repair_values_path": str(self.repair_values_path),
             "resale_research_path": str(self.resale_research_path),
@@ -194,6 +196,7 @@ def load_settings() -> Settings:
             "https://api.ebay.com/identity/v1/oauth2/token",
         ),
         ebay_fetch_descriptions=_env_bool("EBAY_FETCH_DESCRIPTIONS", False),
+        ebay_rate_limit_backoff_seconds=_env_int("EBAY_RATE_LIMIT_BACKOFF_SECONDS", 900),
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
         sqlite_path=sqlite_path,
         repair_values_path=repair_values_path,

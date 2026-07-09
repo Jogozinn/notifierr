@@ -144,7 +144,7 @@ def test_priority_review_and_needs_data_exclude_stale_by_default():
     stats = storage.stats()
 
     assert stats["priority_review"] == 1
-    assert stats["needs_data"] == 1
+    assert stats["needs_data"] == 0
     assert [item["item_id"] for item in storage.list_items()] == ["fresh-priority"]
 
 

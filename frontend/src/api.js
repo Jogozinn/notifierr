@@ -130,6 +130,33 @@ export function getAdminScanStats() {
   return request("/admin/scan/stats");
 }
 
+export function getAdminScanCycles() {
+  return request("/admin/scan/cycles?limit=10");
+}
+
+export function getAdminWorkerStatus() {
+  return request("/admin/worker/status");
+}
+
+export function getAdminSourcesStatus() {
+  return request("/admin/sources/status");
+}
+
+export function getAdminFreshScanExport() {
+  return request("/admin/scan/fresh-export");
+}
+
+export function runTraceReplay(payload) {
+  return request("/admin/scan/trace-replay", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getTraceExport(cycleId) {
+  return request(`/admin/scan/cycles/${encodeURIComponent(cycleId)}/trace-export`);
+}
+
 export function getUserSettings() {
   return request("/settings");
 }

@@ -11,7 +11,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from .config import DEFAULT_KEYWORDS
-from .db_models import metadata, shared_scan_runs, shared_scan_searches, user_keywords, users
+from .db_models import metadata, scan_cycles, shared_scan_runs, shared_scan_searches, source_statuses, user_keywords, users
 from .scorer import now_iso
 
 
@@ -416,6 +416,95 @@ CREATE TABLE IF NOT EXISTS shared_scan_results (
     FOREIGN KEY(scan_search_id) REFERENCES shared_scan_searches(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS scan_cycles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL,
+    user_id INTEGER,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL DEFAULT 'started',
+    skip_reason TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    source TEXT,
+    error_category TEXT,
+    http_status INTEGER,
+    cooldown_until TEXT,
+    retry_after_seconds INTEGER,
+    process_id INTEGER NOT NULL DEFAULT 0,
+    hostname TEXT NOT NULL DEFAULT '',
+    auth_required INTEGER NOT NULL DEFAULT 0,
+    background_poll_enabled INTEGER NOT NULL DEFAULT 0,
+    background_poll_seconds INTEGER NOT NULL DEFAULT 0,
+    active_window_start TEXT,
+    active_window_end TEXT,
+    active_window_timezone TEXT NOT NULL DEFAULT '',
+    users_considered INTEGER NOT NULL DEFAULT 0,
+    users_scanned INTEGER NOT NULL DEFAULT 0,
+    keywords_searched TEXT NOT NULL DEFAULT '[]',
+    sources_checked TEXT NOT NULL DEFAULT '[]',
+    items_found INTEGER NOT NULL DEFAULT 0,
+    new_items_found INTEGER NOT NULL DEFAULT 0,
+    duplicate_items INTEGER NOT NULL DEFAULT 0,
+    items_scored INTEGER NOT NULL DEFAULT 0,
+    alerts_attempted INTEGER NOT NULL DEFAULT 0,
+    alerts_sent INTEGER NOT NULL DEFAULT 0,
+    alerts_failed INTEGER NOT NULL DEFAULT 0,
+    final_bucket_counts TEXT NOT NULL DEFAULT '{}',
+    alert_block_reason_counts TEXT NOT NULL DEFAULT '{}',
+    missing_data_reason_counts TEXT NOT NULL DEFAULT '{}',
+    risk_flag_counts TEXT NOT NULL DEFAULT '{}',
+    model_detection_failure_count INTEGER NOT NULL DEFAULT 0,
+    resale_missing_count INTEGER NOT NULL DEFAULT 0,
+    parts_pricing_status_counts TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+    worker_name TEXT PRIMARY KEY,
+    process_id INTEGER NOT NULL,
+    hostname TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_cycle_id INTEGER,
+    last_error TEXT NOT NULL DEFAULT '',
+    next_wake_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(last_cycle_id) REFERENCES scan_cycles(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS listing_decision_traces (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    marketplace_item_id INTEGER NOT NULL,
+    scan_cycle_id INTEGER NOT NULL,
+    trace_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, marketplace_item_id, scan_cycle_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(marketplace_item_id) REFERENCES marketplace_items(id) ON DELETE CASCADE,
+    FOREIGN KEY(scan_cycle_id) REFERENCES scan_cycles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS source_statuses (
+    source TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'ok',
+    cooldown_until TEXT,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    last_http_status INTEGER,
+    last_error_category TEXT NOT NULL DEFAULT '',
+    last_error_message TEXT NOT NULL DEFAULT '',
+    last_keyword TEXT NOT NULL DEFAULT '',
+    last_item_id TEXT NOT NULL DEFAULT '',
+    retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_usage_daily (
     user_id INTEGER NOT NULL,
     usage_date TEXT NOT NULL,
@@ -547,6 +636,21 @@ class Storage:
             if column not in user_columns:
                 connection.execute(statement)
 
+        scan_cycle_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(scan_cycles)").fetchall()
+        }
+        scan_cycle_migrations = {
+            "source": "ALTER TABLE scan_cycles ADD COLUMN source TEXT",
+            "error_category": "ALTER TABLE scan_cycles ADD COLUMN error_category TEXT",
+            "http_status": "ALTER TABLE scan_cycles ADD COLUMN http_status INTEGER",
+            "cooldown_until": "ALTER TABLE scan_cycles ADD COLUMN cooldown_until TEXT",
+            "retry_after_seconds": "ALTER TABLE scan_cycles ADD COLUMN retry_after_seconds INTEGER",
+        }
+        for column, statement in scan_cycle_migrations.items():
+            if column not in scan_cycle_columns:
+                connection.execute(statement)
+
     def _create_indexes(self, connection: sqlite3.Connection) -> None:
         columns = {
             row["name"]
@@ -594,6 +698,12 @@ class Storage:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_shared_scan_searches_run_id ON shared_scan_searches(scan_run_id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_shared_scan_searches_signature ON shared_scan_searches(search_signature)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_shared_scan_results_search_id ON shared_scan_results(scan_search_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_started_at ON scan_cycles(started_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_status ON scan_cycles(status)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_user_id ON scan_cycles(user_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_listing_decision_traces_cycle ON listing_decision_traces(scan_cycle_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_listing_decision_traces_user_item ON listing_decision_traces(user_id, marketplace_item_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_source_statuses_updated_at ON source_statuses(updated_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_user_usage_daily_date ON user_usage_daily(usage_date)")
 
     def upsert_item(self, item: dict[str, Any]) -> None:
@@ -2708,6 +2818,442 @@ class Storage:
                 [(scan_search_id, marketplace, item_id, now) for item_id in item_ids],
             )
 
+    def create_scan_cycle(
+        self,
+        *,
+        mode: str,
+        user_id: int | None = None,
+        process_id: int = 0,
+        hostname: str = "",
+        auth_required: bool = False,
+        background_poll_enabled: bool = False,
+        background_poll_seconds: int = 0,
+        active_window_start: str | None = None,
+        active_window_end: str | None = None,
+        active_window_timezone: str = "",
+        users_considered: int = 0,
+        users_scanned: int = 0,
+        keywords_searched: list[str] | None = None,
+        sources_checked: list[str] | None = None,
+        status: str = "started",
+        skip_reason: str = "",
+        error_message: str = "",
+        source: str | None = None,
+        error_category: str | None = None,
+        http_status: int | None = None,
+        cooldown_until: str | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> int:
+        now = now_iso()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO scan_cycles (
+                    mode, user_id, started_at, finished_at, status, skip_reason, error_message,
+                    source, error_category, http_status, cooldown_until, retry_after_seconds,
+                    process_id, hostname, auth_required, background_poll_enabled,
+                    background_poll_seconds, active_window_start, active_window_end,
+                    active_window_timezone, users_considered, users_scanned,
+                    keywords_searched, sources_checked, created_at, updated_at
+                )
+                VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    mode[:40],
+                    user_id,
+                    now,
+                    status[:20],
+                    skip_reason[:500],
+                    error_message[:1000],
+                    source[:80] if source else None,
+                    error_category[:120] if error_category else None,
+                    int(http_status) if http_status is not None else None,
+                    cooldown_until,
+                    int(retry_after_seconds) if retry_after_seconds is not None else None,
+                    int(process_id or 0),
+                    hostname[:255],
+                    int(bool(auth_required)),
+                    int(bool(background_poll_enabled)),
+                    int(background_poll_seconds or 0),
+                    active_window_start,
+                    active_window_end,
+                    active_window_timezone[:80],
+                    int(users_considered or 0),
+                    int(users_scanned or 0),
+                    json.dumps(keywords_searched or []),
+                    json.dumps(sources_checked or []),
+                    now,
+                    now,
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def finish_scan_cycle(
+        self,
+        cycle_id: int,
+        *,
+        status: str,
+        skip_reason: str = "",
+        error_message: str = "",
+        users_considered: int | None = None,
+        users_scanned: int | None = None,
+        keywords_searched: list[str] | None = None,
+        sources_checked: list[str] | None = None,
+        items_found: int = 0,
+        new_items_found: int = 0,
+        duplicate_items: int = 0,
+        items_scored: int = 0,
+        alerts_attempted: int = 0,
+        alerts_sent: int = 0,
+        alerts_failed: int = 0,
+        final_bucket_counts: dict[str, int] | None = None,
+        alert_block_reason_counts: dict[str, int] | None = None,
+        missing_data_reason_counts: dict[str, int] | None = None,
+        risk_flag_counts: dict[str, int] | None = None,
+        model_detection_failure_count: int = 0,
+        resale_missing_count: int = 0,
+        parts_pricing_status_counts: dict[str, int] | None = None,
+        source: str | None = None,
+        error_category: str | None = None,
+        http_status: int | None = None,
+        cooldown_until: str | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        now = now_iso()
+        with self.connect() as connection:
+            current = connection.execute(
+                "SELECT users_considered, users_scanned, keywords_searched, sources_checked FROM scan_cycles WHERE id = ?",
+                (cycle_id,),
+            ).fetchone()
+            if not current:
+                return
+            current_dict = dict(current)
+            connection.execute(
+                """
+                UPDATE scan_cycles
+                SET status = ?,
+                    finished_at = ?,
+                    skip_reason = ?,
+                    error_message = ?,
+                    source = ?,
+                    error_category = ?,
+                    http_status = ?,
+                    cooldown_until = ?,
+                    retry_after_seconds = ?,
+                    users_considered = ?,
+                    users_scanned = ?,
+                    keywords_searched = ?,
+                    sources_checked = ?,
+                    items_found = ?,
+                    new_items_found = ?,
+                    duplicate_items = ?,
+                    items_scored = ?,
+                    alerts_attempted = ?,
+                    alerts_sent = ?,
+                    alerts_failed = ?,
+                    final_bucket_counts = ?,
+                    alert_block_reason_counts = ?,
+                    missing_data_reason_counts = ?,
+                    risk_flag_counts = ?,
+                    model_detection_failure_count = ?,
+                    resale_missing_count = ?,
+                    parts_pricing_status_counts = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status[:20],
+                    now,
+                    skip_reason[:500],
+                    error_message[:1000],
+                    source[:80] if source else None,
+                    error_category[:120] if error_category else None,
+                    int(http_status) if http_status is not None else None,
+                    cooldown_until,
+                    int(retry_after_seconds) if retry_after_seconds is not None else None,
+                    int(users_considered if users_considered is not None else current_dict.get("users_considered") or 0),
+                    int(users_scanned if users_scanned is not None else current_dict.get("users_scanned") or 0),
+                    json.dumps(keywords_searched) if keywords_searched is not None else current_dict.get("keywords_searched") or "[]",
+                    json.dumps(sources_checked) if sources_checked is not None else current_dict.get("sources_checked") or "[]",
+                    int(items_found or 0),
+                    int(new_items_found or 0),
+                    int(duplicate_items or 0),
+                    int(items_scored or 0),
+                    int(alerts_attempted or 0),
+                    int(alerts_sent or 0),
+                    int(alerts_failed or 0),
+                    json.dumps(final_bucket_counts or {}, sort_keys=True),
+                    json.dumps(alert_block_reason_counts or {}, sort_keys=True),
+                    json.dumps(missing_data_reason_counts or {}, sort_keys=True),
+                    json.dumps(risk_flag_counts or {}, sort_keys=True),
+                    int(model_detection_failure_count or 0),
+                    int(resale_missing_count or 0),
+                    json.dumps(parts_pricing_status_counts or {}, sort_keys=True),
+                    now,
+                    cycle_id,
+                ),
+            )
+
+    def list_scan_cycles(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM scan_cycles
+                ORDER BY started_at DESC, id DESC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit or 50), 500)),),
+            ).fetchall()
+        return [_scan_cycle_row_to_dict(row) for row in rows]
+
+    def get_scan_cycle(self, cycle_id: int) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM scan_cycles WHERE id = ? LIMIT 1", (cycle_id,)).fetchone()
+        return _scan_cycle_row_to_dict(row) if row else None
+
+    def latest_successful_fresh_scan_cycle(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM scan_cycles
+                WHERE status = 'completed'
+                  AND mode != 'trace_replay'
+                  AND items_scored > 0
+                ORDER BY finished_at DESC, started_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return _scan_cycle_row_to_dict(row) if row else None
+
+    def latest_failed_or_skipped_scan_cycle(self) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM scan_cycles
+                WHERE status IN ('failed', 'skipped')
+                ORDER BY finished_at DESC, started_at DESC, id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return _scan_cycle_row_to_dict(row) if row else None
+
+    def update_worker_heartbeat(
+        self,
+        *,
+        worker_name: str,
+        process_id: int,
+        hostname: str,
+        status: str,
+        started_at: str,
+        last_cycle_id: int | None = None,
+        last_error: str = "",
+        next_wake_at: str | None = None,
+    ) -> None:
+        now = now_iso()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO worker_heartbeats (
+                    worker_name, process_id, hostname, started_at, last_seen_at, status,
+                    last_cycle_id, last_error, next_wake_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worker_name) DO UPDATE SET
+                    process_id = excluded.process_id,
+                    hostname = excluded.hostname,
+                    last_seen_at = excluded.last_seen_at,
+                    status = excluded.status,
+                    last_cycle_id = excluded.last_cycle_id,
+                    last_error = excluded.last_error,
+                    next_wake_at = excluded.next_wake_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    worker_name[:120],
+                    int(process_id or 0),
+                    hostname[:255],
+                    started_at,
+                    now,
+                    status[:20],
+                    last_cycle_id,
+                    last_error[:1000],
+                    next_wake_at,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_worker_heartbeats(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM worker_heartbeats
+                ORDER BY last_seen_at DESC, worker_name ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_source_status(
+        self,
+        source: str,
+        *,
+        status: str,
+        cooldown_until: str | None = None,
+        last_success_at: str | None = None,
+        last_failure_at: str | None = None,
+        last_http_status: int | None = None,
+        last_error_category: str = "",
+        last_error_message: str = "",
+        last_keyword: str = "",
+        last_item_id: str = "",
+        retry_after_seconds: int = 0,
+    ) -> dict[str, Any]:
+        now = now_iso()
+        source = str(source or "").strip().lower() or "unknown"
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO source_statuses (
+                    source, status, cooldown_until, last_success_at, last_failure_at,
+                    last_http_status, last_error_category, last_error_message,
+                    last_keyword, last_item_id, retry_after_seconds, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source) DO UPDATE SET
+                    status = excluded.status,
+                    cooldown_until = excluded.cooldown_until,
+                    last_success_at = COALESCE(excluded.last_success_at, source_statuses.last_success_at),
+                    last_failure_at = COALESCE(excluded.last_failure_at, source_statuses.last_failure_at),
+                    last_http_status = COALESCE(excluded.last_http_status, source_statuses.last_http_status),
+                    last_error_category = CASE
+                        WHEN excluded.last_error_category != '' THEN excluded.last_error_category
+                        ELSE source_statuses.last_error_category
+                    END,
+                    last_error_message = CASE
+                        WHEN excluded.last_error_message != '' THEN excluded.last_error_message
+                        ELSE source_statuses.last_error_message
+                    END,
+                    last_keyword = CASE
+                        WHEN excluded.last_keyword != '' THEN excluded.last_keyword
+                        ELSE source_statuses.last_keyword
+                    END,
+                    last_item_id = CASE
+                        WHEN excluded.last_item_id != '' THEN excluded.last_item_id
+                        ELSE source_statuses.last_item_id
+                    END,
+                    retry_after_seconds = CASE
+                        WHEN excluded.retry_after_seconds != 0 THEN excluded.retry_after_seconds
+                        ELSE source_statuses.retry_after_seconds
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    source[:80],
+                    status[:40],
+                    cooldown_until,
+                    last_success_at,
+                    last_failure_at,
+                    int(last_http_status) if last_http_status is not None else None,
+                    last_error_category[:120],
+                    last_error_message[:1000],
+                    last_keyword[:255],
+                    last_item_id[:120],
+                    int(retry_after_seconds or 0),
+                    now,
+                    now,
+                ),
+            )
+        return self.get_source_status(source) or {}
+
+    def get_source_status(self, source: str) -> dict[str, Any] | None:
+        source = str(source or "").strip().lower()
+        if not source:
+            return None
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM source_statuses WHERE source = ? LIMIT 1", (source,)).fetchone()
+        return dict(row) if row else None
+
+    def list_source_statuses(self) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM source_statuses
+                ORDER BY source ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_listing_decision_trace(
+        self,
+        *,
+        user_id: int,
+        item_id: str,
+        scan_cycle_id: int,
+        trace: dict[str, Any],
+        marketplace: str = "ebay",
+    ) -> None:
+        now = now_iso()
+        with self.connect() as connection:
+            item = connection.execute(
+                "SELECT id FROM marketplace_items WHERE marketplace = ? AND marketplace_item_id = ? LIMIT 1",
+                (marketplace, str(item_id)),
+            ).fetchone()
+            if not item:
+                return
+            connection.execute(
+                """
+                INSERT INTO listing_decision_traces (
+                    user_id, marketplace_item_id, scan_cycle_id, trace_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, marketplace_item_id, scan_cycle_id) DO UPDATE SET
+                    trace_json = excluded.trace_json,
+                    created_at = excluded.created_at
+                """,
+                (
+                    int(user_id),
+                    int(item["id"]),
+                    int(scan_cycle_id),
+                    json.dumps(trace, sort_keys=True),
+                    now,
+                ),
+            )
+
+    def list_decision_traces_for_cycle(self, cycle_id: int, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT ldt.*, mi.marketplace, mi.marketplace_item_id, mi.title
+                FROM listing_decision_traces ldt
+                INNER JOIN marketplace_items mi ON mi.id = ldt.marketplace_item_id
+                WHERE ldt.scan_cycle_id = ?
+                ORDER BY ldt.created_at DESC, ldt.id DESC
+                LIMIT ?
+                """,
+                (cycle_id, max(1, min(int(limit or 500), 1000))),
+            ).fetchall()
+        return [_decision_trace_row_to_dict(row) for row in rows]
+
+    def list_decision_traces_for_item(self, item_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT ldt.*, mi.marketplace, mi.marketplace_item_id, mi.title
+                FROM listing_decision_traces ldt
+                INNER JOIN marketplace_items mi ON mi.id = ldt.marketplace_item_id
+                WHERE mi.marketplace_item_id = ?
+                ORDER BY ldt.created_at DESC, ldt.id DESC
+                LIMIT ?
+                """,
+                (str(item_id), max(1, min(int(limit or 100), 500))),
+            ).fetchall()
+        return [_decision_trace_row_to_dict(row) for row in rows]
+
     def record_user_usage_daily(
         self,
         user_id: int,
@@ -3677,6 +4223,69 @@ class PostgresStorage(Storage):
                 ).scalar_one()
             )
 
+    def create_scan_cycle(
+        self,
+        *,
+        mode: str,
+        user_id: int | None = None,
+        process_id: int = 0,
+        hostname: str = "",
+        auth_required: bool = False,
+        background_poll_enabled: bool = False,
+        background_poll_seconds: int = 0,
+        active_window_start: str | None = None,
+        active_window_end: str | None = None,
+        active_window_timezone: str = "",
+        users_considered: int = 0,
+        users_scanned: int = 0,
+        keywords_searched: list[str] | None = None,
+        sources_checked: list[str] | None = None,
+        status: str = "started",
+        skip_reason: str = "",
+        error_message: str = "",
+        source: str | None = None,
+        error_category: str | None = None,
+        http_status: int | None = None,
+        cooldown_until: str | None = None,
+        retry_after_seconds: int | None = None,
+    ) -> int:
+        now = now_iso()
+        with self.engine.begin() as connection:
+            return int(
+                connection.execute(
+                    scan_cycles.insert()
+                    .values(
+                        mode=mode[:40],
+                        user_id=user_id,
+                        started_at=now,
+                        finished_at=None,
+                        status=status[:20],
+                        skip_reason=skip_reason[:500],
+                        error_message=error_message[:1000],
+                        source=source[:80] if source else None,
+                        error_category=error_category[:120] if error_category else None,
+                        http_status=int(http_status) if http_status is not None else None,
+                        cooldown_until=cooldown_until,
+                        retry_after_seconds=int(retry_after_seconds) if retry_after_seconds is not None else None,
+                        process_id=int(process_id or 0),
+                        hostname=hostname[:255],
+                        auth_required=int(bool(auth_required)),
+                        background_poll_enabled=int(bool(background_poll_enabled)),
+                        background_poll_seconds=int(background_poll_seconds or 0),
+                        active_window_start=active_window_start,
+                        active_window_end=active_window_end,
+                        active_window_timezone=active_window_timezone[:80],
+                        users_considered=int(users_considered or 0),
+                        users_scanned=int(users_scanned or 0),
+                        keywords_searched=json.dumps(keywords_searched or []),
+                        sources_checked=json.dumps(sources_checked or []),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    .returning(scan_cycles.c.id)
+                ).scalar_one()
+            )
+
 
 def _default_user_settings_payload(seed: dict[str, Any] | None = None) -> dict[str, Any]:
     seed = seed or {}
@@ -3746,6 +4355,61 @@ def _invite_row_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
 
 def _joined_item_row_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return dict(row)
+
+
+def _json_field(data: dict[str, Any], key: str, fallback: Any) -> Any:
+    raw = data.get(key)
+    if raw in (None, ""):
+        return fallback
+    if isinstance(raw, (dict, list)):
+        return raw
+    try:
+        return json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
+def _scan_cycle_row_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    for key in (
+        "keywords_searched",
+        "sources_checked",
+    ):
+        data[key] = _json_field(data, key, [])
+    for key in (
+        "final_bucket_counts",
+        "alert_block_reason_counts",
+        "missing_data_reason_counts",
+        "risk_flag_counts",
+        "parts_pricing_status_counts",
+    ):
+        data[key] = _json_field(data, key, {})
+    for key in ("auth_required", "background_poll_enabled"):
+        data[key] = bool(data.get(key))
+    data["cycle_id"] = data.get("id")
+    return data
+
+
+def _decision_trace_row_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    data["trace"] = _json_field(data, "trace_json", {})
+    data.pop("trace_json", None)
+    verdict = data["trace"].get("verdict") if isinstance(data.get("trace"), dict) else {}
+    verdict = verdict or {}
+    data["current_app_bucket"] = data.get("current_app_bucket") or verdict.get("current_app_bucket")
+    data["normalized_bucket"] = (
+        data.get("normalized_bucket")
+        or verdict.get("normalized_bucket")
+        or verdict.get("bucket")
+    )
+    if data.get("alert_eligible") is None and "alert_eligible" in verdict:
+        data["alert_eligible"] = bool(verdict.get("alert_eligible"))
+    if data.get("manual_review_status") is None:
+        if "manual_review_status" in verdict:
+            data["manual_review_status"] = verdict.get("manual_review_status")
+        elif "manual_review_needed" in verdict:
+            data["manual_review_status"] = "needed" if verdict.get("manual_review_needed") else "not_needed"
+    return data
 
 
 def _row_to_dict(
@@ -3903,6 +4567,69 @@ def _is_best_find_item(item: dict[str, Any]) -> bool:
     )
 
 
+REVIEWABLE_PRICING_REASONS = (
+    "Expected profit below threshold",
+    "Only upside case works",
+    "Low-confidence pricing needs stronger profit",
+    "Too cheap without proof",
+    "Profit depends on mint resale",
+    "Missing part price",
+    "Parts estimate not verified",
+    "Low-confidence pricing",
+    "Pricing confidence prevents Best Pick",
+    "Reviewable despite parts/pricing gap",
+)
+
+
+def _has_reviewable_description_evidence(item: dict[str, Any]) -> bool:
+    proof_flags = set(item.get("positive_flags") or [])
+    classification_flags = set(item.get("listing_classification_flags") or [])
+    strong_proof_count = len(
+        proof_flags.intersection({"powers_on", "clean_imei", "face_id_works", "unlocked"})
+    )
+    has_raw_detail = bool(str(item.get("raw_description") or "").strip())
+    has_description_evidence = bool(
+        classification_flags.intersection(
+            {
+                "description_functionality_evidence",
+                "normal_accessory_exclusions",
+            }
+        )
+        or ("description_whole_phone_evidence" in classification_flags and has_raw_detail)
+    )
+    return (
+        item.get("whole_phone_confidence_passed") is True
+        and item.get("has_repair_issue") is True
+        and _has_known_model(item)
+        and bool(item.get("storage_capacity"))
+        and (
+            strong_proof_count >= 2
+            or (strong_proof_count >= 1 and has_description_evidence)
+            or (
+                has_description_evidence
+                and float(item.get("whole_phone_confidence_score") or 0) >= 7
+            )
+        )
+    )
+
+
+def _reviewable_despite_pricing_gap(item: dict[str, Any]) -> bool:
+    if not _has_reviewable_description_evidence(item):
+        return False
+    if _has_excluded_hard_reject(item) or _is_accessory_or_part_listing(item):
+        return False
+    if _uses_model_resale_without_storage(item) and not _storage_fallback_priority_exception(item):
+        return False
+    if float(item.get("resale_value") or item.get("resale_mid") or 0) <= 0:
+        return False
+    reason = item.get("manual_review_reason") or ""
+    return (
+        item.get("estimated_parts_cost_available") is False
+        or item.get("estimated_profit_available") is False
+        or any(pricing_reason in reason for pricing_reason in REVIEWABLE_PRICING_REASONS)
+    )
+
+
 def _is_priority_review_item(item: dict[str, Any]) -> bool:
     if _is_unavailable_item(item):
         return False
@@ -3924,6 +4651,7 @@ def _is_priority_review_item(item: dict[str, Any]) -> bool:
             item.get("estimated_parts_cost_available") is False
             and float(item.get("resale_mid") or item.get("resale_value") or 0) > 0
         )
+        or _reviewable_despite_pricing_gap(item)
     )
 
 
@@ -3933,6 +4661,8 @@ def _is_needs_data_item(item: dict[str, Any]) -> bool:
     if item.get("user_status") in {"ignored", "rejected"} or item.get("status") == "rejected":
         return False
     if item.get("fresh_for_active_queue") is not True:
+        return False
+    if _is_priority_review_item(item) or _reviewable_despite_pricing_gap(item):
         return False
     return (
         not _has_known_model(item)

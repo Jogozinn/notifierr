@@ -97,9 +97,13 @@ class DiscordNotifier:
             embed["thumbnail"] = {"url": item["image_url"]}
 
         payload = {"content": content or _notification_title(item), "embeds": [embed]}
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.post(self.webhook_url, json=payload)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                response = await client.post(self.webhook_url, json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("Discord alert request failed item_id=%s error=%s", item["item_id"], exc)
+            return False
         logger.info("Sent Discord alert item_id=%s", item["item_id"])
         return True
 

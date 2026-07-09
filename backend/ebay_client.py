@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from email.utils import parsedate_to_datetime
 import html
 import logging
 import re
@@ -14,6 +15,25 @@ from .scorer import now_iso
 
 
 logger = logging.getLogger(__name__)
+
+
+class EbayRateLimitError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: int,
+        source: str = "ebay",
+        http_status: int = 429,
+        keyword: str | None = None,
+        item_id: str | None = None,
+    ):
+        super().__init__(message)
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+        self.source = source
+        self.http_status = int(http_status)
+        self.keyword = keyword
+        self.item_id = item_id
 
 
 class EbayClient:
@@ -41,6 +61,21 @@ class EbayClient:
                     headers=headers,
                     params={"q": keyword, "limit": limit, "sort": "newlyListed"},
                 )
+                if response.status_code == 429:
+                    retry_after = _retry_after_seconds(
+                        response,
+                        default_seconds=self.settings.ebay_rate_limit_backoff_seconds,
+                    )
+                    logger.warning(
+                        "eBay search rate limited keyword=%s retry_after_seconds=%s",
+                        keyword,
+                        retry_after,
+                    )
+                    raise EbayRateLimitError(
+                        f"eBay rate limit exceeded; retry after {retry_after} seconds",
+                        retry_after_seconds=retry_after,
+                        keyword=keyword,
+                    )
                 response.raise_for_status()
                 data = response.json()
                 for item in data.get("itemSummaries", []):
@@ -85,8 +120,21 @@ class EbayClient:
                 f"{self.settings.ebay_api_base}/buy/browse/v1/item/{item_id}",
                 headers=headers,
             )
+            if response.status_code == 429:
+                retry_after = _retry_after_seconds(
+                    response,
+                    default_seconds=self.settings.ebay_rate_limit_backoff_seconds,
+                )
+                logger.warning("eBay item detail rate limited item_id=%s retry_after_seconds=%s", item_id, retry_after)
+                raise EbayRateLimitError(
+                    f"eBay rate limit exceeded while fetching item details; retry after {retry_after} seconds",
+                    retry_after_seconds=retry_after,
+                    item_id=item_id,
+                )
             response.raise_for_status()
             return response.json()
+        except EbayRateLimitError:
+            raise
         except httpx.HTTPError as exc:
             logger.warning("Could not fetch eBay item details item_id=%s error=%s", item_id, exc)
             return {}
@@ -145,6 +193,24 @@ def normalize_item(summary: dict[str, Any], details: Optional[dict[str, Any]] = 
         "item_origin_at": listing_origin_at,
         "raw_json": {"summary": summary, "details": details},
     }
+
+
+def _retry_after_seconds(response: httpx.Response, *, default_seconds: int) -> int:
+    raw = (response.headers.get("Retry-After") or "").strip()
+    if raw:
+        try:
+            return max(1, int(float(raw)))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(raw)
+            except (TypeError, ValueError):
+                retry_at = None
+            if retry_at:
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                delta = retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)
+                return max(1, int(delta.total_seconds()))
+    return max(1, int(default_seconds))
 
 
 def _money_value(value: Optional[dict[str, Any]]) -> float:

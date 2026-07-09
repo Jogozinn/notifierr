@@ -5,10 +5,16 @@ import {
   disableAdminUser,
   enableAdminUser,
   getAdminInvites,
+  getAdminFreshScanExport,
+  getAdminScanCycles,
   getAdminScanStats,
+  getAdminSourcesStatus,
   getAdminUserUsage,
   getAdminUsers,
+  getAdminWorkerStatus,
+  getTraceExport,
   revokeAdminInvite,
+  runTraceReplay,
   updateAdminUser,
 } from "../api.js";
 
@@ -31,17 +37,53 @@ const EMPTY_INVITE_DRAFT = {
   expires_at: "",
 };
 
+const EMPTY_REPLAY_DRAFT = {
+  source_cycle_id: "",
+  item_ids: "",
+  limit: 25,
+  active_only: false,
+  non_stale_only: false,
+  not_ignored_only: false,
+  rescore_from_raw: true,
+  dry_run: true,
+  write_traces: false,
+};
+
+const AUDIT_ITEM_IDS = [
+  "v1|327253086710|0",
+  "v1|257612607490|0",
+  "v1|267721455090|0",
+  "v1|398154164118|0",
+  "v1|327253131790|0",
+];
+
+const DEV_FALLBACK_FRESH_CYCLE_ID = "10";
+
 export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [users, setUsers] = useState([]);
   const [invites, setInvites] = useState([]);
   const [scanStats, setScanStats] = useState(null);
+  const [scanCycles, setScanCycles] = useState([]);
+  const [workerStatus, setWorkerStatus] = useState(null);
+  const [sourcesStatus, setSourcesStatus] = useState(null);
+  const [freshScanExport, setFreshScanExport] = useState(null);
+  const [adminAuthMessage, setAdminAuthMessage] = useState("");
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [selectedUsage, setSelectedUsage] = useState(null);
   const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT);
   const [inviteDraft, setInviteDraft] = useState(EMPTY_INVITE_DRAFT);
   const [editDraft, setEditDraft] = useState(null);
+  const [replayDraft, setReplayDraft] = useState(EMPTY_REPLAY_DRAFT);
+  const [replayRunning, setReplayRunning] = useState(false);
+  const [replayResult, setReplayResult] = useState(null);
+  const [replayExport, setReplayExport] = useState(null);
+  const [replayMessage, setReplayMessage] = useState("");
+  const [replayError, setReplayError] = useState("");
+  const [showReplayJson, setShowReplayJson] = useState(false);
+  const [showReplayPayload, setShowReplayPayload] = useState(false);
+  const [copyPayloadStatus, setCopyPayloadStatus] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -49,18 +91,27 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
     async function load() {
       setLoading(true);
       try {
-        const [usersResult, invitesResult, scanStatsResult] = await Promise.all([
+        const [usersResult, invitesResult, scanStatsResult, scanCyclesResult, workerStatusResult, sourcesStatusResult, freshScanExportResult] = await Promise.all([
           getAdminUsers(),
           getAdminInvites(),
           getAdminScanStats(),
+          getAdminScanCycles(),
+          getAdminWorkerStatus(),
+          getAdminSourcesStatus(),
+          getAdminFreshScanExport(),
         ]);
         if (cancelled) {
           return;
         }
         const nextUsers = usersResult.users || [];
+        setAdminAuthMessage("");
         setInvites(invitesResult.invites || []);
         setUsers(nextUsers);
         setScanStats(scanStatsResult);
+        setScanCycles(scanCyclesResult.cycles || []);
+        setWorkerStatus(workerStatusResult);
+        setSourcesStatus(sourcesStatusResult);
+        setFreshScanExport(freshScanExportResult);
         if (nextUsers.length) {
           const nextSelectedUserId = nextUsers.some((entry) => entry.id === selectedUserId)
             ? selectedUserId
@@ -71,7 +122,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
         }
       } catch (err) {
         if (err.status === 401 || err.status === 403) {
-          onUnauthorized();
+          handleAdminAuthFailure(err);
           return;
         }
         onError(err.message);
@@ -118,7 +169,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
         }
       } catch (err) {
         if (err.status === 401 || err.status === 403) {
-          onUnauthorized();
+          handleAdminAuthFailure(err);
           return;
         }
         if (!cancelled) {
@@ -137,17 +188,39 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
     () => users.find((entry) => entry.id === selectedUserId) || null,
     [selectedUserId, users],
   );
+  const latestCycle = scanCycles[0] || null;
+  const backgroundWorker = workerStatus?.workers?.[0] || null;
+  const pollingStatus = workerStatus?.polling_status || {};
+  const ebaySource = sourcesStatus?.sources?.find((entry) => entry.source === "ebay") || null;
+  const freshCycle = freshScanExport?.latest_successful_fresh_scan_cycle || null;
+  const failedOrSkippedCycle = freshScanExport?.latest_failed_or_skipped_scan_cycle
+    || scanCycles.find((entry) => ["failed", "skipped"].includes(entry.status))
+    || null;
+  const latestFreshCycleId = freshCycle?.id || freshCycle?.cycle_id || "";
+  const replayPresetCycleLabel = latestFreshCycleId
+    ? `Latest fresh cycle ${latestFreshCycleId}`
+    : `Fallback dev cycle ${DEV_FALLBACK_FRESH_CYCLE_ID}`;
+  const replayPreviewRows = buildReplayPreviewRows(replayExport, replayResult);
 
   async function refreshUsers({ notice = "" } = {}) {
-    const [usersResult, invitesResult, scanStatsResult] = await Promise.all([
+    const [usersResult, invitesResult, scanStatsResult, scanCyclesResult, workerStatusResult, sourcesStatusResult, freshScanExportResult] = await Promise.all([
       getAdminUsers(),
       getAdminInvites(),
       getAdminScanStats(),
+      getAdminScanCycles(),
+      getAdminWorkerStatus(),
+      getAdminSourcesStatus(),
+      getAdminFreshScanExport(),
     ]);
     const nextUsers = usersResult.users || [];
     setUsers(nextUsers);
     setInvites(invitesResult.invites || []);
     setScanStats(scanStatsResult);
+    setScanCycles(scanCyclesResult.cycles || []);
+    setWorkerStatus(workerStatusResult);
+    setSourcesStatus(sourcesStatusResult);
+    setFreshScanExport(freshScanExportResult);
+    setAdminAuthMessage("");
     if (notice) {
       onNotice(notice);
     }
@@ -168,7 +241,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
       setSelectedUserId(result.user.id);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
-        onUnauthorized();
+        handleAdminAuthFailure(err);
         return;
       }
       onError(err.message);
@@ -192,7 +265,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
       await refreshUsers({ notice: "User updated." });
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
-        onUnauthorized();
+        handleAdminAuthFailure(err);
         return;
       }
       onError(err.message);
@@ -214,7 +287,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
       setInviteDraft(EMPTY_INVITE_DRAFT);
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
-        onUnauthorized();
+        handleAdminAuthFailure(err);
         return;
       }
       onError(err.message);
@@ -230,7 +303,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
       await refreshUsers({ notice: "Invite revoked." });
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
-        onUnauthorized();
+        handleAdminAuthFailure(err);
         return;
       }
       onError(err.message);
@@ -254,12 +327,149 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
       }
     } catch (err) {
       if (err.status === 401 || err.status === 403) {
-        onUnauthorized();
+        handleAdminAuthFailure(err);
         return;
       }
       onError(err.message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  function handleAdminAuthFailure(err) {
+    const message = err.status === 401
+      ? "Admin endpoints require an admin sign-in. For local authenticated debugging, configure AUTH_REQUIRED, AUTH_SECRET_KEY, ADMIN_EMAIL, and ADMIN_PASSWORD, then sign in as that admin."
+      : "Admin endpoints require an active admin account.";
+    setAdminAuthMessage(message);
+    onError(message);
+    onUnauthorized();
+  }
+
+  function updateReplayDraft(patch) {
+    setReplayDraft((current) => {
+      const next = { ...current, ...patch };
+      if (patch.dry_run === true) {
+        next.write_traces = false;
+      }
+      return next;
+    });
+  }
+
+  function applyLatestFreshReplayPreset() {
+    const cycleId = latestFreshCycleId || DEV_FALLBACK_FRESH_CYCLE_ID;
+    setReplayDraft({
+      source_cycle_id: String(cycleId),
+      item_ids: AUDIT_ITEM_IDS.join("\n"),
+      limit: 25,
+      active_only: false,
+      non_stale_only: false,
+      not_ignored_only: false,
+      rescore_from_raw: true,
+      dry_run: true,
+      write_traces: false,
+    });
+    setReplayMessage(latestFreshCycleId
+      ? `Preset filled for latest fresh cycle ${cycleId}. Replay has not been run.`
+      : `Preset filled with fallback dev cycle ${cycleId}. Replay has not been run.`);
+    setReplayError("");
+  }
+
+  function applyKnownAuditItemsPreset() {
+    setReplayDraft({
+      source_cycle_id: "",
+      item_ids: AUDIT_ITEM_IDS.join("\n"),
+      limit: 10,
+      active_only: false,
+      non_stale_only: false,
+      not_ignored_only: false,
+      rescore_from_raw: true,
+      dry_run: true,
+      write_traces: false,
+    });
+    setReplayMessage("Preset filled for known audit items only. Replay has not been run.");
+    setReplayError("");
+  }
+
+  function replayPayload() {
+    const itemIds = replayDraft.item_ids
+      .split(/[\n,]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const payload = {
+      user_id: selectedUserId || undefined,
+      limit: Math.max(1, Math.min(500, Number(replayDraft.limit || 25))),
+      active_only: Boolean(replayDraft.active_only),
+      non_stale_only: Boolean(replayDraft.non_stale_only),
+      not_ignored_only: Boolean(replayDraft.not_ignored_only),
+      rescore_from_raw: Boolean(replayDraft.rescore_from_raw),
+      dry_run: Boolean(replayDraft.dry_run),
+      write_traces: replayDraft.dry_run ? false : Boolean(replayDraft.write_traces),
+    };
+    if (replayDraft.source_cycle_id) {
+      payload.source_cycle_id = Number(replayDraft.source_cycle_id);
+    }
+    if (itemIds.length) {
+      payload.item_ids = itemIds;
+    }
+    return payload;
+  }
+
+  async function handleCopyReplayPayload() {
+    const payloadText = JSON.stringify(replayPayload(), null, 2);
+    setCopyPayloadStatus("");
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(payloadText);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = payloadText;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!copied) {
+          throw new Error("Clipboard copy failed");
+        }
+      }
+      setCopyPayloadStatus("Copied");
+    } catch {
+      setCopyPayloadStatus("Copy failed");
+    }
+  }
+
+  async function handleRunReplay(event) {
+    event.preventDefault();
+    setReplayRunning(true);
+    setReplayError("");
+    setReplayMessage("");
+    setReplayResult(null);
+    setReplayExport(null);
+    try {
+      const payload = replayPayload();
+      const result = await runTraceReplay(payload);
+      let exportResult = null;
+      if (result.scan_cycle_id && payload.write_traces && !payload.dry_run) {
+        exportResult = await getTraceExport(result.scan_cycle_id);
+      }
+      setReplayResult(result);
+      setReplayExport(exportResult);
+      setReplayMessage(payload.dry_run ? "Dry run complete. No trace rows were written." : "Replay complete.");
+      if (!payload.dry_run && !payload.write_traces) {
+        setReplayMessage("Replay complete. Trace rows were not written.");
+      }
+      onNotice(payload.dry_run ? "Trace replay dry run complete." : "Trace replay complete.");
+    } catch (err) {
+      if (err.status === 401 || err.status === 403) {
+        handleAdminAuthFailure(err);
+        return;
+      }
+      setReplayError(err.message);
+      onError(err.message);
+    } finally {
+      setReplayRunning(false);
     }
   }
 
@@ -275,14 +485,30 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
         </div>
 
         {loading ? <div className="empty-state">Loading admin data...</div> : null}
+        {adminAuthMessage ? <div className="empty-state">{adminAuthMessage}</div> : null}
 
         {!loading && scanStats ? (
           <section className="settings-section">
             <div className="settings-section-header">
-              <h3>Shared scan status</h3>
-              <p>{scanStats.worker_status || scanStats.status || "unknown"}</p>
+              <h3>Scan status</h3>
+              <p>{backgroundWorker?.status || latestCycle?.status || scanStats.worker_status || scanStats.status || "unknown"}</p>
             </div>
             <div className="admin-stat-grid">
+              <AdminMetric label="Worker status" value={backgroundWorker?.status || "unknown"} />
+              <AdminMetric label="Last heartbeat" value={backgroundWorker?.last_seen_at || "Never"} />
+              <AdminMetric label="Config poll seconds" value={pollingStatus.background_poll_config_seconds ?? "n/a"} />
+              <AdminMetric label="User poll seconds" value={pollingStatus.background_poll_user_seconds ?? "n/a"} />
+              <AdminMetric label="Final poll seconds" value={pollingStatus.last_sleep_seconds ?? "n/a"} />
+              <AdminMetric label="Poll interval source" value={pollingStatus.background_poll_interval_source || "n/a"} />
+              <AdminMetric label="Last scan cycle" value={latestCycle?.cycle_id || latestCycle?.id || "Never"} />
+              <AdminMetric label="Last scan status" value={latestCycle?.status || "unknown"} />
+              <AdminMetric label="Last skip/failure" value={latestCycle?.skip_reason || latestCycle?.error_message || "None"} />
+              <AdminMetric label="Last found/scored/alerted" value={latestCycle ? `${latestCycle.items_found ?? 0}/${latestCycle.items_scored ?? 0}/${latestCycle.alerts_sent ?? 0}` : "0/0/0"} />
+              <AdminMetric label="eBay source" value={ebaySource?.status || "ok"} />
+              <AdminMetric label="eBay cooldown" value={ebaySource?.cooldown_until || "None"} />
+              <AdminMetric label="Last eBay error" value={ebaySource?.last_error_message_preview || "None"} />
+              <AdminMetric label="Latest fresh cycle" value={freshCycle?.cycle_id || freshCycle?.id || "None"} />
+              <AdminMetric label="Latest failed/skipped" value={failedOrSkippedCycle ? `${failedOrSkippedCycle.id} · ${failedOrSkippedCycle.status}` : "None"} />
               <AdminMetric label="Last shared scan" value={scanStats.last_shared_scan_time || "Never"} />
               <AdminMetric label="Active users" value={scanStats.active_users ?? 0} />
               <AdminMetric label="Unique searches" value={scanStats.unique_searches ?? 0} />
@@ -290,6 +516,227 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
               <AdminMetric label="Items ingested" value={scanStats.total_items_ingested ?? 0} />
               <AdminMetric label="Alerts sent" value={scanStats.alerts_sent ?? 0} />
             </div>
+            <div className="live-summary" aria-label="Needs Data reason counts">
+              <span>Needs Data reasons: <strong>{formatReasonCounts(latestCycle?.missing_data_reason_counts)}</strong></span>
+              {freshCycle ? (
+                <a href={`/admin/scan/cycles/${encodeURIComponent(freshCycle.id)}/trace-export`} target="_blank" rel="noreferrer">Fresh trace export</a>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
+
+        {!loading ? (
+          <section className="settings-section admin-card">
+            <div className="settings-section-header">
+              <div>
+                <h3>Trace Replay / Rescore</h3>
+                <p>Replay uses stored listing data only. It does not call eBay, send alerts, mark alerted, or mutate item status.</p>
+              </div>
+              <div className="admin-user-meta">
+                <span>{selectedUser ? `User ${selectedUser.id}` : "No user"}</span>
+                <span>{replayDraft.dry_run ? "dry run" : "write mode"}</span>
+              </div>
+            </div>
+
+            <div className="replay-preset-row" aria-label="Trace replay presets">
+              <button type="button" onClick={applyLatestFreshReplayPreset}>
+                Preset: Latest fresh cycle raw rescore
+              </button>
+              <button type="button" onClick={applyKnownAuditItemsPreset}>
+                Preset: Known audit items only
+              </button>
+              <button type="button" onClick={handleCopyReplayPayload}>
+                Copy replay payload
+              </button>
+              <button type="button" onClick={() => setShowReplayPayload((current) => !current)}>
+                {showReplayPayload ? "Hide payload" : "Payload preview"}
+              </button>
+              <span>{replayPresetCycleLabel}</span>
+              {copyPayloadStatus ? <span>{copyPayloadStatus}</span> : null}
+            </div>
+            <div className="replay-safety-text">
+              <span>Presets only fill the form.</span>
+              <span>They do not run replay automatically.</span>
+              <span>Dry run does not write trace rows.</span>
+              <span>Raw rescore does not call eBay or send alerts.</span>
+            </div>
+            {showReplayPayload ? (
+              <pre className="raw-json-block replay-payload-preview">
+                {JSON.stringify(replayPayload(), null, 2)}
+              </pre>
+            ) : null}
+
+            <form className="settings-form" onSubmit={handleRunReplay}>
+              <div className="settings-grid admin-settings-grid replay-settings-grid">
+                <label>
+                  <span>Source cycle id</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={replayDraft.source_cycle_id}
+                    onChange={(event) => updateReplayDraft({ source_cycle_id: event.target.value })}
+                    placeholder={freshCycle?.id ? String(freshCycle.id) : "Optional"}
+                  />
+                </label>
+                <label>
+                  <span>Limit</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="500"
+                    value={replayDraft.limit}
+                    onChange={(event) => updateReplayDraft({ limit: event.target.value })}
+                  />
+                </label>
+                <label className="admin-wide-field">
+                  <span>Item ids</span>
+                  <textarea
+                    rows="3"
+                    value={replayDraft.item_ids}
+                    onChange={(event) => updateReplayDraft({ item_ids: event.target.value })}
+                    placeholder="One per line or comma-separated"
+                  />
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={replayDraft.active_only}
+                    onChange={(event) => updateReplayDraft({ active_only: event.target.checked })}
+                  />
+                  <span>Active only</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={replayDraft.non_stale_only}
+                    onChange={(event) => updateReplayDraft({ non_stale_only: event.target.checked })}
+                  />
+                  <span>Non-stale only</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={replayDraft.not_ignored_only}
+                    onChange={(event) => updateReplayDraft({ not_ignored_only: event.target.checked })}
+                  />
+                  <span>Not ignored only</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={replayDraft.rescore_from_raw}
+                    onChange={(event) => updateReplayDraft({ rescore_from_raw: event.target.checked })}
+                  />
+                  <span>Rescore from raw</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={replayDraft.dry_run}
+                    onChange={(event) => updateReplayDraft({ dry_run: event.target.checked })}
+                  />
+                  <span>Dry run</span>
+                </label>
+                <label className="toggle-row">
+                  <input
+                    type="checkbox"
+                    checked={replayDraft.write_traces && !replayDraft.dry_run}
+                    disabled={replayDraft.dry_run}
+                    onChange={(event) => updateReplayDraft({ write_traces: event.target.checked })}
+                  />
+                  <span>Write traces</span>
+                </label>
+              </div>
+              <div className="settings-actions-row replay-actions">
+                <button className="primary-button" type="submit" disabled={replayRunning || !selectedUserId}>
+                  {replayRunning ? "Running..." : replayDraft.dry_run ? "Dry Run Rescore" : "Run Replay"}
+                </button>
+                {replayResult?.scan_cycle_id ? (
+                  <a
+                    href={`/admin/scan/cycles/${encodeURIComponent(replayResult.scan_cycle_id)}/trace-export`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Trace export
+                  </a>
+                ) : null}
+                <button type="button" onClick={() => setShowReplayJson((current) => !current)}>
+                  {showReplayJson ? "Hide JSON" : "Raw JSON"}
+                </button>
+              </div>
+            </form>
+
+            <div className="replay-safety-text">
+              <span>Rescore from raw reruns the current deterministic scorer on stored marketplace data.</span>
+              <span>Dry run does not write trace rows.</span>
+              <span>Write traces creates replay traces for export review.</span>
+            </div>
+
+            {replayMessage ? <div className="empty-state replay-status">{replayMessage}</div> : null}
+            {replayError ? <div className="empty-state replay-status">{replayError}</div> : null}
+
+            {replayResult ? (
+              <>
+                <div className="admin-stat-grid replay-stat-grid">
+                  <AdminMetric label="Replay cycle" value={replayResult.scan_cycle_id || "None"} />
+                  <AdminMetric label="Dry run" value={String(Boolean(replayResult.dry_run))} />
+                  <AdminMetric label="Traces written" value={replayResult.traces_written ?? 0} />
+                  <AdminMetric label="Items rescored" value={replayExport?.total_rescored_items ?? replayResult.replayed ?? 0} />
+                  <AdminMetric label="Changed status" value={replayExport?.changed_status_count ?? "n/a"} />
+                  <AdminMetric label="Changed alerts" value={replayExport?.changed_alert_eligibility_count ?? "n/a"} />
+                  <AdminMetric label="Accessory/display rejects" value={replayExport?.display_screen_assembly_reject_count ?? "n/a"} />
+                  <AdminMetric label="High-resale gated" value={replayExport?.high_resale_new_model_gated_count ?? "n/a"} />
+                  <AdminMetric label="Storage review routed" value={replayExport?.storage_unknown_review_routed_count ?? "n/a"} />
+                  <AdminMetric label="Carrier unknown" value={replayExport?.carrier_unknown_warning_count ?? "n/a"} />
+                  <AdminMetric label="Alert eligible" value={replayExport?.alert_eligible_count ?? "n/a"} />
+                  <AdminMetric label="Alert blocked" value={replayExport?.alert_blocked_count ?? "n/a"} />
+                </div>
+                {replayResult.dry_run || replayResult.traces_written === 0 ? (
+                  <div className="empty-state replay-status">No trace rows were written for this run.</div>
+                ) : null}
+              </>
+            ) : null}
+
+            {replayPreviewRows.length ? (
+              <div className="replay-preview">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th>Title</th>
+                      <th>Persisted</th>
+                      <th>Rescored</th>
+                      <th>Score</th>
+                      <th>Alert</th>
+                      <th>Bucket</th>
+                      <th>Changed</th>
+                      <th>Top reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {replayPreviewRows.map((row) => (
+                      <tr key={row.item_id}>
+                        <td className="mono-cell">{row.item_id}</td>
+                        <td>{row.title}</td>
+                        <td>{row.persisted_status || "n/a"}</td>
+                        <td>{row.rescored_status || "n/a"}</td>
+                        <td>{formatScorePair(row.persisted_score, row.rescored_score)}</td>
+                        <td>{formatBooleanPair(row.persisted_alert_eligible, row.rescored_alert_eligible)}</td>
+                        <td>{row.rescored_normalized_bucket || row.normalized_bucket || "n/a"}</td>
+                        <td>{row.changed_status || row.changed_alert_eligibility ? "yes" : "no"}</td>
+                        <td>{topReplayReason(row)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
+
+            {showReplayJson && (replayResult || replayExport) ? (
+              <pre className="raw-json-block">
+                {JSON.stringify({ replay: replayResult, export: replayExport }, null, 2)}
+              </pre>
+            ) : null}
           </section>
         ) : null}
 
@@ -525,5 +972,89 @@ function AdminMetric({ label, value }) {
       <span>{label}</span>
       <strong>{String(value)}</strong>
     </div>
+  );
+}
+
+function formatReasonCounts(counts) {
+  if (!counts || !Object.keys(counts).length) {
+    return "None";
+  }
+  return Object.entries(counts)
+    .sort((first, second) => Number(second[1] || 0) - Number(first[1] || 0))
+    .slice(0, 5)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join(", ");
+}
+
+function buildReplayPreviewRows(replayExport, replayResult) {
+  const exportSamples = replayExport?.samples || {};
+  const rows = [
+    ...(exportSamples.changed_traces || []),
+    ...(exportSamples.possible_false_positives || []),
+    ...(exportSamples.possible_missed_gems || []),
+    ...(exportSamples.needs_data || []),
+    ...(exportSamples.bucket_disagreements || []),
+  ];
+  if (rows.length) {
+    return dedupeReplayRows(rows).slice(0, 10);
+  }
+  const dryRunTraces = replayResult?.dry_run_traces || [];
+  return dryRunTraces.map(traceToPreviewRow).slice(0, 10);
+}
+
+function traceToPreviewRow(trace) {
+  const comparison = trace?.comparison || {};
+  const verdict = trace?.verdict || {};
+  const reasons = trace?.reasons || {};
+  return {
+    item_id: trace?.listing_id || "",
+    title: trace?.title || "",
+    persisted_status: comparison.persisted_status,
+    rescored_status: comparison.rescored_status || verdict.current_app_status,
+    persisted_score: comparison.persisted_score,
+    rescored_score: comparison.rescored_score ?? verdict.score,
+    persisted_alert_eligible: comparison.persisted_alert_eligible,
+    rescored_alert_eligible: comparison.rescored_alert_eligible ?? verdict.alert_eligible,
+    rescored_normalized_bucket: comparison.rescored_normalized_bucket || verdict.normalized_bucket || verdict.bucket,
+    changed_status: comparison.changed_status,
+    changed_alert_eligibility: comparison.changed_alert_eligibility,
+    changed_reasons: comparison.changed_reasons || [],
+    blocking_rules: reasons.blocking_rules || [],
+    missing_data: reasons.missing_data || [],
+  };
+}
+
+function dedupeReplayRows(rows) {
+  const seen = new Set();
+  const result = [];
+  for (const row of rows) {
+    const key = row.item_id || row.title || JSON.stringify(row);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(row);
+  }
+  return result;
+}
+
+function formatScorePair(persisted, rescored) {
+  const left = persisted === undefined || persisted === null ? "n/a" : Number(persisted).toFixed(0);
+  const right = rescored === undefined || rescored === null ? "n/a" : Number(rescored).toFixed(0);
+  return `${left} -> ${right}`;
+}
+
+function formatBooleanPair(persisted, rescored) {
+  const left = persisted === undefined || persisted === null ? "n/a" : String(Boolean(persisted));
+  const right = rescored === undefined || rescored === null ? "n/a" : String(Boolean(rescored));
+  return `${left} -> ${right}`;
+}
+
+function topReplayReason(row) {
+  return (
+    row.changed_reasons?.[0]
+    || row.blocking_rules?.[0]
+    || row.missing_data?.[0]
+    || "none"
   );
 }

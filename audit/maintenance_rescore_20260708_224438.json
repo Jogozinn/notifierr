@@ -1,0 +1,48 @@
+{
+  "alert_eligibility_changes": 1,
+  "alert_eligible_false_to_true": 0,
+  "alert_eligible_true_to_false": 1,
+  "candidates_downgraded": 1,
+  "dry_run": false,
+  "mode": "maintenance_rescore",
+  "needs_data_changed": 0,
+  "reason": "clear stale candidate after component detection fix",
+  "rejected_changed": 1,
+  "risky_downgraded": 0,
+  "risky_upgraded": 0,
+  "sample_changed_rows": [
+    {
+      "changed_reasons": [
+        "status_changed",
+        "alert_eligibility_changed",
+        "manual_review_reason_changed",
+        "parts_pricing_status_changed",
+        "added_hard_risk:display_assembly_not_phone",
+        "added_hard_risk:oled_lcd_part_not_phone",
+        "added_hard_risk:screen_part_not_phone"
+      ],
+      "confidence": 4.0,
+      "item_id": "v1|327253131790|0",
+      "persisted_alert_eligible": true,
+      "persisted_manual_review_reason": "Best Offer available",
+      "persisted_score": 93.0,
+      "persisted_status": "candidate",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Accessory/part listing; Screen/display part listing; Not a whole phone; Parts estimate not verified; Model unknown; Best Offer available",
+      "rescored_score": -100.0,
+      "rescored_status": "rejected",
+      "title": "Apple iPhone 14 oem cracked screen parts Read bad OLED"
+    }
+  ],
+  "scan_cycle_id": 16,
+  "score_changes": 1,
+  "skipped_count": 0,
+  "skipped_reasons": {},
+  "status_changes": 1,
+  "total_rescored": 1,
+  "total_selected": 1,
+  "unchanged_count": 0,
+  "write": true,
+  "write_traces": false,
+  "written_count": 1
+}

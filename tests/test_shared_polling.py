@@ -1,6 +1,8 @@
 import asyncio
-from datetime import datetime, timezone
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -89,6 +91,20 @@ def _create_user(storage: Storage, settings: Settings, email: str, password: str
         role=role,
         account_status=account_status,
         baseline_keywords=settings.search_keywords,
+    )
+
+
+def _set_ebay_cooldown(storage: Storage, *, keyword: str = "shared keyword") -> dict:
+    return storage.update_source_status(
+        "ebay",
+        status="cooling_down",
+        cooldown_until=(datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat(),
+        last_failure_at=datetime.now(timezone.utc).isoformat(),
+        last_http_status=429,
+        last_error_category="ebay_rate_limited",
+        last_error_message="EbayRateLimitError: eBay rate limit exceeded",
+        last_keyword=keyword,
+        retry_after_seconds=900,
     )
 
 
@@ -506,6 +522,1391 @@ def test_background_shared_scan_does_not_overlap(monkeypatch, tmp_path):
 
     assert skipped["skipped"] is True
     assert skipped["reason"] == "scan_already_running"
+
+
+def test_background_poll_loop_starts_only_when_process_should_poll(monkeypatch, tmp_path):
+    async def fake_background_poll():
+        await asyncio.Event().wait()
+
+    async def run_test():
+        _configure_app(
+            monkeypatch,
+            tmp_path,
+            auth_required=True,
+            background_poll_enabled=False,
+        )
+        monkeypatch.setattr(main, "_background_poll", fake_background_poll)
+        monkeypatch.setattr(main, "_background_poll_task", None)
+        main.polling_status.reset()
+        assert main._start_background_poll_loop() is None
+        assert main.polling_status.snapshot()["process_poll_task_started"] is False
+
+        _configure_app(
+            monkeypatch,
+            tmp_path,
+            auth_required=True,
+            background_poll_enabled=True,
+        )
+        main.polling_status.reset()
+        first = main._start_background_poll_loop()
+        assert first is not None
+        assert main.polling_status.snapshot()["process_poll_task_started"] is True
+        await main._stop_background_poll_loop(first)
+
+        _configure_app(
+            monkeypatch,
+            tmp_path,
+            auth_required=False,
+            background_poll_enabled=False,
+        )
+        main.polling_status.reset()
+        local = main._start_background_poll_loop()
+        assert local is None
+        assert main.polling_status.snapshot()["process_poll_task_started"] is False
+
+        _configure_app(
+            monkeypatch,
+            tmp_path,
+            auth_required=False,
+            background_poll_enabled=True,
+        )
+        monkeypatch.setattr(main, "_background_poll_task", None)
+        main.polling_status.reset()
+        local_enabled = main._start_background_poll_loop()
+        assert local_enabled is not None
+        assert main.polling_status.snapshot()["process_poll_task_started"] is True
+        await main._stop_background_poll_loop(local_enabled)
+
+    asyncio.run(run_test())
+
+
+def test_background_poll_loop_does_not_start_twice_in_one_process(monkeypatch, tmp_path):
+    async def fake_background_poll():
+        await asyncio.Event().wait()
+
+    async def run_test():
+        _configure_app(
+            monkeypatch,
+            tmp_path,
+            auth_required=True,
+            background_poll_enabled=True,
+        )
+        monkeypatch.setattr(main, "_background_poll", fake_background_poll)
+        monkeypatch.setattr(main, "_background_poll_task", None)
+        main.polling_status.reset()
+
+        first = main._start_background_poll_loop()
+        second = main._start_background_poll_loop()
+
+        assert first is not None
+        assert second is first
+        assert main.polling_status.snapshot()["duplicate_start_prevented"] is True
+        await main._stop_background_poll_loop(first)
+
+    asyncio.run(run_test())
+
+
+def test_background_poll_loop_skips_fresh_external_worker_heartbeat(monkeypatch, tmp_path, caplog):
+    async def fake_background_poll():
+        raise AssertionError("background poll should not start")
+
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=900,
+    )
+    storage.update_worker_heartbeat(
+        worker_name="background_poll",
+        process_id=main._process_id() + 1000,
+        hostname="other-host",
+        started_at=datetime.now(timezone.utc).isoformat(),
+        status="sleeping",
+        next_wake_at=(datetime.now(timezone.utc) + timedelta(seconds=900)).isoformat(),
+    )
+    monkeypatch.setattr(main, "_background_poll", fake_background_poll)
+    monkeypatch.setattr(main, "_background_poll_task", None)
+    main.polling_status.reset()
+
+    caplog.set_level(logging.WARNING)
+    task = main._start_background_poll_loop()
+
+    assert task is None
+    status = main.polling_status.snapshot()
+    assert status["process_poll_task_started"] is False
+    assert status["duplicate_start_prevented"] is True
+    assert "another worker heartbeat is fresh" in caplog.text
+
+
+def test_background_poll_scan_failure_does_not_stop_future_cycles(monkeypatch, caplog):
+    calls = {"scan": 0, "sleep": 0}
+    resolved = SimpleNamespace(
+        background_poll_enabled=True,
+        background_poll_seconds=1,
+        background_poll_active_start=None,
+        background_poll_active_end=None,
+        background_poll_timezone="UTC",
+        keywords=["iphone"],
+    )
+
+    async def fake_scan_once(*args, **kwargs):
+        del args, kwargs
+        calls["scan"] += 1
+        if calls["scan"] == 1:
+            raise RuntimeError("temporary scan failure")
+        return {"alerts_sent": 2}
+
+    async def fake_sleep(seconds):
+        del seconds
+        calls["sleep"] += 1
+        if calls["sleep"] >= 2:
+            raise asyncio.CancelledError()
+
+    async def run_test():
+        try:
+            await main._background_poll()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(main, "settings", Settings(auth_required=False, background_poll_seconds=1))
+    monkeypatch.setattr(main, "_resolve_effective_user_settings", lambda **kwargs: resolved)
+    monkeypatch.setattr(main, "scan_once", fake_scan_once)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main.polling_status.reset()
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(run_test())
+
+    status = main.polling_status.snapshot()
+    assert calls["scan"] == 2
+    assert status["cycles_attempted"] == 2
+    assert status["cycles_succeeded"] == 1
+    assert status["cycles_failed"] == 1
+    assert status["last_alerts_sent"] == 2
+    assert "RuntimeError: temporary scan failure" in status["last_error"]
+    assert "Background poll cycle failed" in caplog.text
+    assert "Background scan summary alerts_sent=2" in caplog.text
+
+
+def test_background_poll_local_interval_uses_config_over_local_setting(monkeypatch, tmp_path, caplog):
+    _storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=900,
+    )
+    resolved = SimpleNamespace(
+        user=None,
+        background_poll_enabled=True,
+        background_poll_seconds=60,
+        background_poll_active_start=None,
+        background_poll_active_end=None,
+        background_poll_timezone="UTC",
+        keywords=["iphone"],
+    )
+    calls = {"sleep": 0}
+
+    async def fake_sleep(seconds):
+        calls["sleep"] += 1
+        assert seconds == 900
+        raise asyncio.CancelledError()
+
+    async def run_test():
+        try:
+            await main._background_poll()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(main, "_resolve_effective_user_settings", lambda **kwargs: resolved)
+    monkeypatch.setattr(main, "_background_poll_is_active", lambda current_settings: False)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main.polling_status.reset()
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(run_test())
+
+    status = main.polling_status.snapshot()
+    assert calls["sleep"] == 1
+    assert status["background_poll_config_seconds"] == 900
+    assert status["background_poll_user_seconds"] == 60
+    assert status["background_poll_interval_source"] == "config_local"
+    assert status["last_sleep_seconds"] == 900
+    assert "next_poll_seconds=900 config_poll_seconds=900 user_poll_seconds=60" in caplog.text
+
+
+def test_background_poll_clamps_unsafe_poll_interval(monkeypatch, tmp_path, caplog):
+    _storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=60,
+    )
+    resolved = SimpleNamespace(
+        user=None,
+        background_poll_enabled=True,
+        background_poll_seconds=60,
+        background_poll_active_start=None,
+        background_poll_active_end=None,
+        background_poll_timezone="UTC",
+        keywords=["iphone"],
+    )
+    calls = {"sleep": 0}
+
+    async def fake_sleep(seconds):
+        calls["sleep"] += 1
+        assert seconds == 900
+        raise asyncio.CancelledError()
+
+    async def run_test():
+        try:
+            await main._background_poll()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(main, "_resolve_effective_user_settings", lambda **kwargs: resolved)
+    monkeypatch.setattr(main, "_background_poll_is_active", lambda current_settings: False)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main.polling_status.reset()
+
+    caplog.set_level(logging.WARNING)
+    asyncio.run(run_test())
+
+    assert calls["sleep"] == 1
+    assert main.polling_status.snapshot()["last_sleep_seconds"] == 900
+    assert "Background poll interval below safe minimum; clamping" in caplog.text
+
+
+def test_background_poll_rate_limit_uses_long_backoff(monkeypatch, caplog):
+    storage, settings = _configure_app(
+        monkeypatch,
+        Path(":memory:"),
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+        background_poll_seconds=60,
+        ebay_rate_limit_backoff_seconds=900,
+    )
+    calls = {"sleep": 0}
+    resolved = SimpleNamespace(
+        background_poll_enabled=True,
+        background_poll_seconds=60,
+        background_poll_active_start=None,
+        background_poll_active_end=None,
+        background_poll_timezone="UTC",
+        keywords=["iphone"],
+    )
+
+    async def fake_scan_once(*args, **kwargs):
+        del args, kwargs
+        raise main.EbayRateLimitError("eBay rate limit exceeded", retry_after_seconds=1200)
+
+    async def fake_sleep(seconds):
+        calls["sleep"] += 1
+        assert seconds == 1200
+        raise asyncio.CancelledError()
+
+    async def run_test():
+        try:
+            await main._background_poll()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(
+        main,
+        "settings",
+        Settings(
+            sqlite_path=settings.sqlite_path,
+            auth_required=False,
+            background_poll_seconds=60,
+            ebay_rate_limit_backoff_seconds=900,
+        ),
+    )
+    monkeypatch.setattr(main, "_resolve_effective_user_settings", lambda **kwargs: resolved)
+    monkeypatch.setattr(main, "scan_once", fake_scan_once)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main.polling_status.reset()
+
+    caplog.set_level(logging.INFO)
+    asyncio.run(run_test())
+
+    status = main.polling_status.snapshot()
+    assert calls["sleep"] == 1
+    assert status["cycles_failed"] == 1
+    assert status["last_sleep_seconds"] == 1200
+    assert "EbayRateLimitError: eBay rate limit exceeded" in status["last_error"]
+    assert "Background poll hit eBay rate limit" in caplog.text
+    source = storage.get_source_status("ebay")
+    assert source["status"] == "cooling_down"
+    assert source["last_http_status"] == 429
+    assert source["last_error_category"] == "ebay_rate_limited"
+    assert source["retry_after_seconds"] == 1200
+    cycle = storage.list_scan_cycles()[0]
+    assert cycle["mode"] == "local_background"
+    assert cycle["status"] == "failed"
+    assert cycle["error_category"] == "ebay_rate_limited"
+    assert cycle["http_status"] == 429
+    assert cycle["cooldown_until"]
+    heartbeat = storage.get_worker_heartbeats()[0]
+    assert heartbeat["last_cycle_id"] == cycle["id"]
+    assert heartbeat["next_wake_at"]
+
+
+def test_manual_scan_rate_limit_returns_429(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+        ebay_rate_limit_backoff_seconds=900,
+    )
+
+    class RateLimitedEbayClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def search(self, keywords, limit):
+            del keywords, limit
+            raise main.EbayRateLimitError("eBay rate limit exceeded", retry_after_seconds=777)
+
+    monkeypatch.setattr(main, "EbayClient", RateLimitedEbayClient)
+
+    with TestClient(main.app) as client:
+        response = client.post("/scan/run", json={"notify": False})
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "777"
+    assert response.json()["detail"]["retry_after_seconds"] == 777
+    source = storage.get_source_status("ebay")
+    assert source["status"] == "cooling_down"
+    assert source["last_http_status"] == 429
+    assert source["last_error_category"] == "ebay_rate_limited"
+    assert source["retry_after_seconds"] == 777
+
+
+def test_scan_cycle_persists_on_successful_manual_scan(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+    _install_shared_scan_fakes(monkeypatch, [_listing("cycle-success")])
+
+    summary = asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+
+    cycles = storage.list_scan_cycles()
+    assert summary["scanned"] == 1
+    assert len(cycles) == 1
+    assert cycles[0]["mode"] == "manual"
+    assert cycles[0]["status"] == "completed"
+    assert cycles[0]["items_found"] == 1
+    assert cycles[0]["items_scored"] == 1
+    assert cycles[0]["final_bucket_counts"]["gem"] == 1
+
+
+def test_decision_trace_is_stored_for_scored_listing(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+    _install_shared_scan_fakes(monkeypatch, [_listing("trace-success")])
+
+    asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+
+    cycle = storage.list_scan_cycles()[0]
+    traces = storage.list_decision_traces_for_cycle(int(cycle["id"]))
+    assert len(traces) == 1
+    trace = traces[0]["trace"]
+    assert trace["listing_id"] == "trace-success"
+    assert trace["detected"]["model"] == "iPhone 14"
+    assert trace["pricing"]["resale_mid"] == 520.0
+    assert trace["verdict"]["app_status"] == "candidate"
+    assert trace["verdict"]["current_app_bucket"] == "candidate"
+    assert trace["verdict"]["bucket"] == "gem"
+    assert trace["verdict"]["normalized_bucket"] == "gem"
+
+
+def test_decision_trace_export_flattens_verdict_fields_from_json(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    storage.upsert_user_item(
+        int(user["id"]),
+        {**_listing("trace-flatten"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()},
+    )
+    cycle_id = storage.create_scan_cycle(mode="manual", user_id=int(user["id"]))
+    storage.record_listing_decision_trace(
+        user_id=int(user["id"]),
+        item_id="trace-flatten",
+        scan_cycle_id=cycle_id,
+        trace={
+            "listing_id": "trace-flatten",
+            "title": "Apple iPhone 14 128GB Unlocked Cracked Screen",
+            "detected": {},
+            "pricing": {},
+            "reasons": {},
+            "verdict": {
+                "current_app_bucket": "risky",
+                "normalized_bucket": "watch",
+                "bucket": "watch",
+                "alert_eligible": False,
+                "manual_review_needed": True,
+                "score": 55,
+            },
+        },
+    )
+
+    row = storage.list_decision_traces_for_cycle(cycle_id)[0]
+
+    assert row["current_app_bucket"] == "risky"
+    assert row["normalized_bucket"] == "watch"
+    assert row["alert_eligible"] is False
+    assert row["manual_review_status"] == "needed"
+
+
+def test_trace_replay_does_not_call_ebay_or_send_alerts_and_writes_traces(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    stored_item = {**_listing("replay-trace"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()}
+    storage.upsert_user_item(int(user["id"]), stored_item)
+
+    def fail_ebay(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("trace replay must not instantiate EbayClient")
+
+    def fail_notifier(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("trace replay must not instantiate DiscordNotifier")
+
+    _install_shared_scan_fakes(monkeypatch, [])
+    monkeypatch.setattr(main, "EbayClient", fail_ebay)
+    monkeypatch.setattr(main, "DiscordNotifier", fail_notifier)
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+
+    assert result["replayed"] == 1
+    cycle = storage.get_scan_cycle(result["scan_cycle_id"])
+    assert cycle["mode"] == "trace_replay"
+    assert cycle["status"] == "completed"
+    assert cycle["items_scored"] == 1
+    assert cycle["alerts_attempted"] == 0
+    assert cycle["alerts_sent"] == 0
+    traces = storage.list_decision_traces_for_cycle(result["scan_cycle_id"])
+    assert len(traces) == 1
+    trace = traces[0]["trace"]
+    assert trace["listing_id"] == "replay-trace"
+    assert trace["verdict"]["current_app_status"] == "risky"
+    assert trace["verdict"]["current_app_bucket"] == "risky"
+    assert trace["verdict"]["normalized_bucket"] in {"gem", "good", "needs_data", "watch", "bad", "avoid"}
+
+
+def test_trace_replay_rescore_from_raw_does_not_call_ebay_send_alerts_or_mutate_status(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    stored_item = {**_listing("raw-rescore"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()}
+    storage.upsert_user_item(int(user["id"]), stored_item)
+    captured_listing = {}
+
+    def fail_ebay(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("raw rescore replay must not instantiate EbayClient")
+
+    def fail_notifier(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("raw rescore replay must not instantiate DiscordNotifier")
+
+    def score_from_raw(listing, repair_values, **kwargs):
+        del repair_values, kwargs
+        captured_listing.update(listing)
+        return FakeScoreResult(status="candidate", alert_eligible=True)
+
+    monkeypatch.setattr(main, "EbayClient", fail_ebay)
+    monkeypatch.setattr(main, "DiscordNotifier", fail_notifier)
+    monkeypatch.setattr(main, "score_listing", score_from_raw)
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True))
+
+    assert result["replayed"] == 1
+    assert result["rescore_from_raw"] is True
+    assert result["traces_written"] == 1
+    assert "status" not in captured_listing
+    assert "model" not in captured_listing
+    assert storage.get_user_item(int(user["id"]), "raw-rescore")["status"] == "risky"
+    traces = storage.list_decision_traces_for_cycle(result["scan_cycle_id"])
+    assert len(traces) == 1
+    comparison = traces[0]["trace"]["comparison"]
+    assert comparison["persisted_status"] == "risky"
+    assert comparison["rescored_status"] == "candidate"
+    assert comparison["changed_status"] is True
+    assert comparison["changed_alert_eligibility"] is True
+    cycle = storage.get_scan_cycle(result["scan_cycle_id"])
+    assert cycle["mode"] == "trace_replay"
+    assert cycle["alerts_attempted"] == 0
+    assert cycle["alerts_sent"] == 0
+
+
+def test_trace_replay_rescore_can_target_source_cycle_and_item_ids(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    for item_id in ("source-a", "source-b", "source-c"):
+        storage.upsert_user_item(
+            int(user["id"]),
+            {**_listing(item_id), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()},
+        )
+    source_cycle_id = storage.create_scan_cycle(mode="manual", user_id=int(user["id"]))
+    storage.record_listing_decision_trace(
+        user_id=int(user["id"]),
+        item_id="source-a",
+        scan_cycle_id=source_cycle_id,
+        trace={"listing_id": "source-a", "verdict": {}, "detected": {}, "pricing": {}, "reasons": {}},
+    )
+    storage.record_listing_decision_trace(
+        user_id=int(user["id"]),
+        item_id="source-b",
+        scan_cycle_id=source_cycle_id,
+        trace={"listing_id": "source-b", "verdict": {}, "detected": {}, "pricing": {}, "reasons": {}},
+    )
+    monkeypatch.setattr(main, "score_listing", lambda listing, repair_values, **kwargs: FakeScoreResult(status="candidate", alert_eligible=True))
+
+    result = main.replay_listing_decision_traces(
+        main.TraceReplayRequest(
+            source_cycle_id=source_cycle_id,
+            item_ids=["source-b", "source-c"],
+            rescore_from_raw=True,
+            limit=10,
+        )
+    )
+
+    traces = storage.list_decision_traces_for_cycle(result["scan_cycle_id"])
+    assert result["replayed"] == 1
+    assert traces[0]["trace"]["listing_id"] == "source-b"
+    assert result["filters"]["source_cycle_id"] == source_cycle_id
+    assert result["filters"]["item_ids"] == ["source-b", "source-c"]
+
+
+def test_trace_replay_rescore_dry_run_does_not_write_traces(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    storage.upsert_user_item(
+        int(user["id"]),
+        {**_listing("dry-run-rescore"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()},
+    )
+    monkeypatch.setattr(main, "score_listing", lambda listing, repair_values, **kwargs: FakeScoreResult(status="candidate", alert_eligible=True))
+
+    result = main.replay_listing_decision_traces(
+        main.TraceReplayRequest(limit=10, rescore_from_raw=True, dry_run=True)
+    )
+
+    assert result["replayed"] == 1
+    assert result["traces_written"] == 0
+    assert result["dry_run_traces"][0]["listing_id"] == "dry-run-rescore"
+    assert storage.list_decision_traces_for_cycle(result["scan_cycle_id"]) == []
+    cycle = storage.get_scan_cycle(result["scan_cycle_id"])
+    assert cycle["items_scored"] == 1
+
+
+def test_trace_replay_rescore_export_includes_comparison_and_change_counters(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    storage.upsert_user_item(
+        int(user["id"]),
+        {**_listing("comparison-rescore"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()},
+    )
+    monkeypatch.setattr(main, "score_listing", lambda listing, repair_values, **kwargs: FakeScoreResult(status="candidate", alert_eligible=True))
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True))
+    export = main.build_trace_audit_export(result["scan_cycle_id"])
+
+    assert export["total_rescored_items"] == 1
+    assert export["changed_status_count"] == 1
+    assert export["changed_alert_eligibility_count"] == 1
+    changed = export["samples"]["changed_traces"][0]
+    assert changed["persisted_status"] == "risky"
+    assert changed["rescored_status"] == "candidate"
+    assert changed["changed_reasons"]
+
+
+def test_trace_replay_rescore_rejects_display_part_from_raw_description(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    monkeypatch.setattr(
+        main,
+        "repair_values",
+        {
+            "iPhone 14": {
+                "resale": {"low": 280, "mid": 337, "high": 410},
+                "risk_buffer": 70,
+                "parts_pricing_status": "verified_screenshot",
+                "parts": {"screen_safe": 44},
+            }
+        },
+    )
+    storage.upsert_user_item(
+        int(user["id"]),
+        {
+            **_listing("display-raw-rescore"),
+            "title": "Apple iPhone 14 oem cracked screen parts Read bad OLED",
+            "condition": "For parts or not working",
+            "raw_description": "Touch works. Phone is not included, for flex parts only.",
+            "total_cost": 40,
+            **FakeScoreResult(status="candidate", alert_eligible=True).as_item_fields(),
+        },
+    )
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True))
+    trace = storage.list_decision_traces_for_cycle(result["scan_cycle_id"])[0]["trace"]
+
+    assert trace["verdict"]["current_app_status"] == "candidate"
+    assert trace["comparison"]["rescored_status"] == "rejected"
+    assert trace["comparison"]["rescored_alert_eligible"] is False
+    assert trace["detected"]["accessory_or_part_only"] is True
+    assert "screen_part_not_phone" in trace["detected"]["hard_risks"]
+
+
+def test_trace_replay_export_returns_reason_counters_and_needs_data_samples(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    stored_item = {**_listing("replay-needs-data"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()}
+    storage.upsert_user_item(int(user["id"]), stored_item)
+
+    def blocked_score(**kwargs):
+        del kwargs
+        result = FakeScoreResult(score=55.0, status="risky", alert_eligible=False)
+        result.model = "unknown"
+        result.storage_capacity = None
+        result.estimated_profit_available = False
+        result.estimated_parts_cost_available = False
+        result.estimated_parts_cost = 0
+        result.manual_review_needed = True
+        result.manual_review_reason = "Missing part price; Model unknown"
+        return result
+
+    _install_shared_scan_fakes(monkeypatch, [], score_factory=blocked_score)
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+    export = main.build_trace_audit_export(result["scan_cycle_id"])
+
+    assert export["total_traces"] == 1
+    assert export["needs_data_reason_counts"]["model_unknown"] == 1
+    assert export["needs_data_reason_counts"]["storage_unknown"] == 1
+    assert export["alert_blocker_counts"]["estimated_profit_unavailable"] == 1
+    assert export["model_unknown_count"] == 1
+    assert export["storage_unknown_count"] == 1
+    assert export["parts_cost_missing_count"] == 1
+    assert export["samples"]["needs_data"][0]["item_id"] == "replay-needs-data"
+
+
+def test_trace_audit_export_includes_description_extraction_miss_samples(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    listing = {
+        **_listing("description-miss-trace"),
+        "title": "Broken Unlocked Apple iPhone 13 128GB Bad Battery",
+        "condition": "For parts or not working",
+        "raw_description": """
+        Items included in this sale: Broken Unlocked Apple iPhone 13 128GB Bad Battery.
+        Functionality condition: Face ID works, cameras are fully functional, LCD/OLED has no issues,
+        touch screen is fully functional, the charge port is clean and fully functional.
+        This iPhone has a clean IMEI and is ready to be activated. Battery Health 84%.
+        """,
+        "total_cost": 180,
+    }
+    result = main.score_listing(
+        listing,
+        {
+            "iPhone 13": {
+                "resale": {"low": 240, "mid": 330, "high": 400},
+                "risk_buffer": 50,
+                "parts_pricing_status": "verified_screenshot_low_confidence",
+                "parts": {"battery": 30},
+            }
+        },
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+    item = {**listing, **result.as_item_fields()}
+    storage.upsert_user_item(int(user["id"]), item)
+    cycle_id = storage.create_scan_cycle(mode="manual", user_id=int(user["id"]))
+    trace = main._build_decision_trace(
+        item,
+        result,
+        main._resolve_effective_user_settings(user),
+        scan_cycle_id=cycle_id,
+    )
+    storage.record_listing_decision_trace(user_id=int(user["id"]), item_id="description-miss-trace", scan_cycle_id=cycle_id, trace=trace)
+
+    export = main.build_trace_audit_export(cycle_id)
+
+    assert export["description_extraction_miss_count"] == 1
+    sample = export["samples"]["description_extraction_misses"][0]
+    assert sample["category"] == "app_failed_to_extract_description_signals"
+    assert sample["raw_description_evidence"]["included_device_signals"]
+    assert "included_device" in sample["missed_signals"]
+
+
+def test_trace_replay_handles_empty_db_gracefully(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    _install_shared_scan_fakes(monkeypatch, [])
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+    export = main.build_trace_audit_export(result["scan_cycle_id"])
+
+    assert result["replayed"] == 0
+    cycle = storage.get_scan_cycle(result["scan_cycle_id"])
+    assert cycle["status"] == "completed"
+    assert cycle["items_found"] == 0
+    assert cycle["items_scored"] == 0
+    assert export["total_traces"] == 0
+    assert export["samples"]["needs_data"] == []
+
+
+def test_alert_block_and_missing_data_reasons_appear_in_trace(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+
+    def blocked_score(**kwargs):
+        del kwargs
+        result = FakeScoreResult(score=55.0, status="risky", alert_eligible=False)
+        result.storage_capacity = None
+        result.estimated_profit_available = False
+        result.estimated_parts_cost_available = False
+        result.manual_review_needed = True
+        result.manual_review_reason = "Missing part price"
+        return result
+
+    _install_shared_scan_fakes(monkeypatch, [_listing("trace-blocked")], score_factory=blocked_score)
+
+    asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+
+    cycle = storage.list_scan_cycles()[0]
+    trace = storage.list_decision_traces_for_cycle(int(cycle["id"]))[0]["trace"]
+    assert "status_not_candidate" in trace["reasons"]["blocking_rules"]
+    assert "score_below_threshold" in trace["reasons"]["blocking_rules"]
+    assert "estimated_profit_unavailable" in trace["reasons"]["blocking_rules"]
+    assert "storage_unknown" in trace["reasons"]["missing_data"]
+    assert "part_price_missing" in trace["reasons"]["missing_data"]
+    assert cycle["alert_block_reason_counts"]["estimated_profit_unavailable"] == 1
+    assert cycle["missing_data_reason_counts"]["part_price_missing"] == 1
+
+
+def test_scan_cycle_persists_on_failed_scan(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+
+    class FailingEbayClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def search(self, keywords, limit):
+            del keywords, limit
+            raise RuntimeError("search failed")
+
+    monkeypatch.setattr(main, "EbayClient", FailingEbayClient)
+
+    try:
+        asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+    except RuntimeError:
+        pass
+
+    cycle = storage.list_scan_cycles()[0]
+    assert cycle["status"] == "failed"
+    assert "RuntimeError: search failed" in cycle["error_message"]
+
+
+def test_failed_shared_scan_persists_user_and_keyword_context(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=True,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    admin = _create_user(storage, settings, "failed-admin@example.com", "failed-admin-pass", role="admin")
+    _create_user(storage, settings, "failed-member@example.com", "failed-member-pass")
+
+    class FailingEbayClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def search(self, keywords, limit):
+            del keywords, limit
+            raise RuntimeError("shared search failed")
+
+    monkeypatch.setattr(main, "EbayClient", FailingEbayClient)
+
+    try:
+        asyncio.run(
+            main.scan_shared_once(
+                limit=10,
+                notify=False,
+                triggered_by_user=admin,
+                background_mode=False,
+                keyword_filter=["shared keyword"],
+            )
+        )
+    except RuntimeError:
+        pass
+
+    cycle = storage.list_scan_cycles()[0]
+    assert cycle["status"] == "failed"
+    assert cycle["users_considered"] == 2
+    assert cycle["users_scanned"] == 2
+    assert cycle["keywords_searched"] == ["shared keyword"]
+
+
+def test_ebay_429_scan_failure_preserves_rate_limit_context(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=True,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    admin = _create_user(storage, settings, "rate-limit-admin@example.com", "rate-limit-admin-pass", role="admin")
+
+    class RateLimitedEbayClient:
+        def __init__(self, settings):
+            self.settings = settings
+
+        async def search(self, keywords, limit):
+            del limit
+            raise main.EbayRateLimitError(
+                "eBay rate limit exceeded; retry after 900 seconds",
+                retry_after_seconds=900,
+                keyword=keywords[0],
+            )
+
+    monkeypatch.setattr(main, "EbayClient", RateLimitedEbayClient)
+
+    try:
+        asyncio.run(
+            main.scan_shared_once(
+                limit=10,
+                notify=False,
+                triggered_by_user=admin,
+                background_mode=False,
+                keyword_filter=["shared keyword"],
+            )
+        )
+    except main.EbayRateLimitError:
+        pass
+
+    cycle = storage.list_scan_cycles()[0]
+    assert cycle["status"] == "failed"
+    assert cycle["source"] == "ebay"
+    assert cycle["error_category"] == "ebay_rate_limited"
+    assert cycle["http_status"] == 429
+    assert cycle["cooldown_until"]
+    assert cycle["retry_after_seconds"] == 900
+    assert cycle["users_considered"] == 1
+    assert cycle["keywords_searched"] == ["shared keyword"]
+    assert "EbayRateLimitError: eBay rate limit exceeded" in cycle["error_message"]
+    assert '"category": "ebay_rate_limited"' in cycle["error_message"]
+    assert '"source": "ebay"' in cycle["error_message"]
+    assert '"http_status": 429' in cycle["error_message"]
+    assert '"retry_after_seconds": 900' in cycle["error_message"]
+    assert '"keyword": "shared keyword"' in cycle["error_message"]
+    source = storage.get_source_status("ebay")
+    assert source["status"] == "cooling_down"
+    assert source["cooldown_until"]
+    assert source["last_http_status"] == 429
+    assert source["last_error_category"] == "ebay_rate_limited"
+    assert source["last_keyword"] == "shared keyword"
+    assert source["retry_after_seconds"] == 900
+
+
+def test_manual_scan_during_ebay_cooldown_is_skipped_without_calling_ebay(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+    _set_ebay_cooldown(storage)
+
+    class FailingEbayClient:
+        def __init__(self, settings):
+            del settings
+            raise AssertionError("cooldown scan must not instantiate EbayClient")
+
+    monkeypatch.setattr(main, "EbayClient", FailingEbayClient)
+
+    summary = asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+
+    cycle = storage.list_scan_cycles()[0]
+    assert summary["skipped"] is True
+    assert summary["reason"] == "ebay_rate_limited"
+    assert summary["cooldown_until"]
+    assert cycle["status"] == "skipped"
+    assert cycle["skip_reason"] == "ebay_rate_limited"
+    assert cycle["source"] == "ebay"
+    assert cycle["error_category"] == "ebay_rate_limited"
+    assert cycle["http_status"] == 429
+    assert cycle["cooldown_until"]
+    assert cycle["retry_after_seconds"] == 900
+    assert cycle["sources_checked"] == ["ebay"]
+    assert cycle["users_considered"] == 1
+    assert cycle["users_scanned"] == 0
+    assert "cooldown_until" in cycle["error_message"]
+
+
+def test_background_shared_scan_during_ebay_cooldown_is_skipped_without_calling_ebay(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=True,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = _create_user(storage, settings, "cooldown-bg@example.com", "cooldown-bg-pass")
+    storage.update_user_settings(int(user["id"]), {"background_poll_enabled": 1})
+    _set_ebay_cooldown(storage)
+
+    class FailingEbayClient:
+        def __init__(self, settings):
+            del settings
+            raise AssertionError("cooldown scan must not instantiate EbayClient")
+
+    monkeypatch.setattr(main, "EbayClient", FailingEbayClient)
+
+    summary = asyncio.run(
+        main.scan_shared_once(
+            limit=10,
+            notify=False,
+            triggered_by_user=None,
+            background_mode=True,
+        )
+    )
+
+    cycle = storage.list_scan_cycles()[0]
+    assert summary["skipped"] is True
+    assert summary["reason"] == "ebay_rate_limited"
+    assert cycle["mode"] == "shared_background"
+    assert cycle["status"] == "skipped"
+    assert cycle["skip_reason"] == "ebay_rate_limited"
+    assert cycle["source"] == "ebay"
+    assert cycle["error_category"] == "ebay_rate_limited"
+    assert cycle["http_status"] == 429
+    assert cycle["cooldown_until"]
+    assert cycle["retry_after_seconds"] == 900
+    assert cycle["users_considered"] == 1
+    assert cycle["users_scanned"] == 0
+
+
+def test_source_status_endpoint_returns_cooling_down_state(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    _set_ebay_cooldown(storage, keyword="endpoint keyword")
+    monkeypatch.setattr(main, "_should_start_background_poll_loop", lambda: False)
+
+    with TestClient(main.app) as client:
+        response = client.get("/admin/sources/status")
+
+    assert response.status_code == 200
+    source = response.json()["sources"][0]
+    assert source["source"] == "ebay"
+    assert source["status"] == "cooling_down"
+    assert source["cooldown_until"]
+    assert source["last_http_status"] == 429
+    assert source["last_error_category"] == "ebay_rate_limited"
+    assert source["last_keyword"] == "endpoint keyword"
+
+
+def test_scan_cycle_persists_on_skipped_active_window_scan(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    storage.update_user_settings(int(user["id"]), {"background_poll_enabled": 1, "background_poll_seconds": 1})
+    resolved = main._resolve_effective_user_settings(user)
+
+    async def fake_sleep(seconds):
+        del seconds
+        raise asyncio.CancelledError()
+
+    async def run_test():
+        try:
+            await main._background_poll()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(main, "_resolve_effective_user_settings", lambda **kwargs: resolved)
+    monkeypatch.setattr(main, "_background_poll_is_active", lambda current_settings: False)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(main, "settings", Settings(sqlite_path=settings.sqlite_path, auth_required=False, background_poll_seconds=1))
+
+    asyncio.run(run_test())
+
+    cycle = storage.list_scan_cycles()[0]
+    assert cycle["mode"] == "local_background"
+    assert cycle["status"] == "skipped"
+    assert cycle["skip_reason"] == "outside_active_window"
+
+
+def test_worker_heartbeat_updates_from_background_poll(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    storage.update_user_settings(int(user["id"]), {"background_poll_enabled": 0, "background_poll_seconds": 1})
+    resolved = main._resolve_effective_user_settings(user)
+
+    async def fake_sleep(seconds):
+        del seconds
+        raise asyncio.CancelledError()
+
+    async def run_test():
+        try:
+            await main._background_poll()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(main, "_resolve_effective_user_settings", lambda **kwargs: resolved)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(main, "settings", Settings(sqlite_path=settings.sqlite_path, auth_required=False, background_poll_seconds=1))
+
+    asyncio.run(run_test())
+
+    heartbeat = storage.get_worker_heartbeats()[0]
+    assert heartbeat["worker_name"] == "background_poll"
+    assert heartbeat["status"] == "sleeping"
+    assert heartbeat["last_seen_at"]
+    assert heartbeat["next_wake_at"]
+
+
+def test_admin_scan_instrumentation_endpoints_return_data(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+    _install_shared_scan_fakes(monkeypatch, [_listing("endpoint-trace")])
+    asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+    cycle = storage.list_scan_cycles()[0]
+
+    monkeypatch.setattr(main, "_should_start_background_poll_loop", lambda: False)
+    with TestClient(main.app) as client:
+        cycles = client.get("/admin/scan/cycles")
+        cycle_detail = client.get(f"/admin/scan/cycles/{cycle['id']}")
+        traces = client.get(f"/admin/scan/cycles/{cycle['id']}/decision-traces")
+        item_traces = client.get("/admin/items/endpoint-trace/decision-traces")
+        workers = client.get("/admin/worker/status")
+
+    assert cycles.status_code == 200
+    assert cycle_detail.status_code == 200
+    assert traces.status_code == 200
+    assert item_traces.status_code == 200
+    assert workers.status_code == 200
+    assert cycles.json()["cycles"][0]["id"] == cycle["id"]
+    assert traces.json()["decision_traces"][0]["trace"]["listing_id"] == "endpoint-trace"
+    assert item_traces.json()["decision_traces"][0]["scan_cycle_id"] == cycle["id"]
+    assert "workers" in workers.json()
+
+
+def test_admin_trace_replay_and_export_endpoints_return_data(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    storage.upsert_user_item(
+        int(user["id"]),
+        {**_listing("endpoint-replay"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()},
+    )
+    _install_shared_scan_fakes(monkeypatch, [])
+    monkeypatch.setattr(main, "_should_start_background_poll_loop", lambda: False)
+
+    with TestClient(main.app) as client:
+        replay_response = client.post("/admin/scan/trace-replay", json={"limit": 10})
+        cycle_id = replay_response.json()["scan_cycle_id"]
+        export_response = client.get(f"/admin/scan/cycles/{cycle_id}/trace-export")
+
+    assert replay_response.status_code == 200
+    assert replay_response.json()["replayed"] == 1
+    assert export_response.status_code == 200
+    export = export_response.json()
+    assert export["scan_cycle_id"] == cycle_id
+    assert export["total_traces"] == 1
+    assert "current_app_bucket_counts" in export
+    assert export["bucket_field_definitions"]["current_app_bucket"].startswith("Existing app queue")
+    assert export["bucket_field_definitions"]["normalized_bucket"].startswith("Audit-derived bucket")
+    assert export["samples"]["bucket_disagreements"]
+
+
+def test_fresh_scan_audit_export_ignores_trace_replay_cycles(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+    _install_shared_scan_fakes(monkeypatch, [_listing("fresh-export")])
+
+    asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
+    fresh_cycle = storage.list_scan_cycles()[0]
+    replay = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+
+    export = main.build_latest_fresh_scan_audit_export()
+
+    assert replay["scan_cycle_id"] != fresh_cycle["id"]
+    assert export["latest_successful_fresh_scan_cycle"]["id"] == fresh_cycle["id"]
+    assert export["latest_successful_fresh_scan_cycle"]["mode"] == "manual"
+    assert export["trace_export"]["scan_cycle_id"] == fresh_cycle["id"]
+    assert export["trace_export"]["total_traces"] == 1
+
+
+def test_shared_scan_notification_failure_is_logged_and_does_not_mark_alerted(monkeypatch, tmp_path, caplog):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=True,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+    )
+    user = _create_user(storage, settings, "notify-fail@example.com", "notify-fail-pass")
+    storage.update_user_notification_settings(
+        int(user["id"]),
+        {
+            "discord_webhook": "https://discord.example/fail",
+            "discord_enabled": 1,
+            "alerts_enabled": 1,
+            "notify_best_finds": 1,
+        },
+    )
+    _install_shared_scan_fakes(monkeypatch, [_listing("notify-fail")])
+
+    class FailingNotifier:
+        def __init__(self, webhook_url):
+            self.webhook_url = webhook_url
+
+        async def send_deal(self, item, *, content=None):
+            del item, content
+            raise RuntimeError("discord unavailable")
+
+    monkeypatch.setattr(main, "DiscordNotifier", FailingNotifier)
+    main.polling_status.reset()
+    caplog.set_level(logging.INFO)
+
+    summary = asyncio.run(
+        main.scan_shared_once(
+            limit=10,
+            notify=True,
+            triggered_by_user=None,
+            background_mode=False,
+        )
+    )
+
+    assert summary["best_finds"] == 1
+    assert summary["alerts_sent"] == 0
+    assert storage.was_alerted_for_user(int(user["id"]), "notify-fail") is False
+    assert main.polling_status.snapshot()["last_notifications_failed"] == 1
+    assert "Alert notification send failed" in caplog.text
+
+
+def test_polling_status_endpoint_returns_expected_keys_in_local_mode(monkeypatch, tmp_path):
+    _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=False,
+    )
+    main.polling_status.reset()
+    main.polling_status.task_started()
+    main.polling_status.polling_enabled(False)
+
+    with TestClient(main.app) as client:
+        response = client.get("/admin/polling/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    expected = {
+        "process_poll_task_started",
+        "duplicate_start_prevented",
+        "auth_required",
+        "background_poll_env_enabled",
+        "background_poll_config_seconds",
+        "background_poll_user_seconds",
+        "background_poll_interval_source",
+        "safe_min_background_poll_seconds",
+        "local_or_user_polling_enabled",
+        "cycle_running",
+        "last_cycle_started_at",
+        "last_cycle_finished_at",
+        "last_success_at",
+        "last_failure_at",
+        "last_error",
+        "last_sleep_seconds",
+        "cycles_attempted",
+        "cycles_succeeded",
+        "cycles_failed",
+        "last_scan_summary",
+        "last_alerts_found",
+        "last_alerts_sent",
+        "last_notifications_attempted",
+        "last_notifications_sent",
+        "last_notifications_failed",
+    }
+    assert expected.issubset(payload.keys())
+    assert payload["auth_required"] is False
+    assert payload["process_poll_task_started"] is False
+
+
+def test_admin_notification_test_uses_message_path_without_alert_dedupe_mutation(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=True,
+        ebay_client_id="id",
+        ebay_client_secret="secret",
+        discord_webhook_url="https://discord.example/global",
+    )
+    admin = _create_user(storage, settings, "admin-notify@example.com", "admin-notify-pass", role="admin")
+    storage.update_user_notification_settings(
+        int(admin["id"]),
+        {
+            "discord_webhook": "https://discord.example/admin",
+            "discord_enabled": 1,
+            "alerts_enabled": 1,
+            "notify_best_finds": 1,
+            "notify_priority_review": 1,
+        },
+    )
+    _install_shared_scan_fakes(monkeypatch, [_listing("admin-test-dedupe")])
+
+    sent_messages = []
+
+    async def fake_send_message(self, content):
+        sent_messages.append((self.webhook_url, content))
+        return True
+
+    monkeypatch.setattr(main.DiscordNotifier, "send_message", fake_send_message)
+    main.polling_status.reset()
+
+    with TestClient(main.app) as client:
+        token = _login(client, "admin-notify@example.com", "admin-notify-pass")
+        scan = client.post("/scan/run", headers=_auth_headers(token), json={"notify": False})
+        before = storage.was_alerted_for_user(int(admin["id"]), "admin-test-dedupe")
+        response = client.post("/admin/notifications/test", headers=_auth_headers(token))
+        after = storage.was_alerted_for_user(int(admin["id"]), "admin-test-dedupe")
+
+    assert scan.status_code == 200
+    assert before is False
+    assert response.status_code == 200
+    assert response.json() == {"attempted": True, "sent": True, "failed": False, "error": ""}
+    assert after is False
+    assert sent_messages == [("https://discord.example/admin", "Notifierr test notification")]
+    assert main.polling_status.snapshot()["last_notifications_sent"] == 1
 
 
 def test_admin_scan_stats_reports_latest_shared_run(monkeypatch, tmp_path):

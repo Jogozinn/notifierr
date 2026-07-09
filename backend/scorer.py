@@ -42,7 +42,7 @@ NOT_PHONE_PATTERNS = {
     "housing_not_phone": r"\b(?:rear\s+housing|back\s+housing|\bhousing\b|chassis|housing\s+with\s+small\s+parts|back\s+glass\s+rear\s+housing)\b",
     "battery_part_not_phone": r"\bbattery\s+for\s+iphone\b",
     "charging_port_part_not_phone": r"\bcharging\s+port\s+(?:flex\s+)?(?:cable\s+)?for\s+iphone\b|\bcharging\s+port\s+flex\b",
-    "replacement_part_not_phone": r"\b(?:replacement\s+part|repair\s+part|flex\s+cable)\b",
+    "replacement_part_not_phone": r"\b(?:replacement\s+part|repair\s+part|flex\s+cable|for\s+flex\s+parts\s+only|flex\s+parts\s+only)\b",
     "logic_board": r"\blogic\s+board\b",
     "motherboard": r"\bmother\s*board\b",
 }
@@ -50,24 +50,24 @@ NOT_PHONE_PATTERNS = {
 POSITIVE_PATTERNS = {
     "cracked_screen": r"\bcracked\s+screen\b|\bscreen\s+(?:is\s+)?cracked\b",
     "screen_display_issue": r"\b(?:screen\s+lines|vertical\s+lines|black\s+spot|bad\s+lcd|damaged\s+lcd|lcd\s+screen(?:\s+damaged)?|screen\s+has\s+lines|display\s+lines)\b",
-    "bad_battery": r"\bbad\s+battery\b|\bswollen\s+battery\b|\bbattery\s+(?:service|needs\s+replacement|issue)\b",
+    "bad_battery": r"\bbad\s+battery\b|\bswollen\s+battery\b|\bbattery\s+(?:service|needs\s+replacement|issue)\b|\bbattery\s+needs\s+to\s+be\s+serviced\b",
     "back_glass_cracked": r"\bback\s+glass\s+cracked\b|\bcracked\s+back\s+glass\b|\bcracked\s+back\b",
     "camera_lens_cracked": r"\bcamera\s+lens\s+cracked\b|\bcracked\s+camera\s+lens\b",
     "charging_port_issue": r"\bcharging\s+port\s+(?:issue|problem|bad|broken)\b|\bdoes\s+not\s+charge\b",
     "bad_oled": r"\bbad\s+oled\b",
-    "powers_on": r"\bpowers?\s+on\b|\bturns?\s+on\b",
+    "powers_on": r"\bpowers?\s+on\b|\bturns?\s+on\b|\bboots?\b|\bphone\s+works\b|\bdoes\s+still\s+work\b",
     "unlocked": r"\bfactory\s+unlocked\b|\bcarrier\s+unlocked\b|\bunlocked\b",
-    "clean_imei": r"\bclean\s+imei\b|\bclean\s+esn\b",
-    "face_id_works": r"\bface\s*id\s+works\b|\bface\s*id\s+working\b",
+    "clean_imei": r"\bclean\s+imei\b|\bclean\s+esn\b|\bready\s+to\s+be\s+activated\b",
+    "face_id_works": r"\bface\s*id\s+works\b|\bface\s*id\s+working\b|\bface\s*id\s+functions?\s+properly\b|\bface\s*id\s+works?\s+as\s+expected\b",
 }
 
 PROOF_PATTERNS = {
     "proof_tested": r"\btested\b",
-    "proof_icloud_off": r"\bicloud\s+(?:off|removed|signed\s+out)\b",
+    "proof_icloud_off": r"\bicloud\s+(?:off|removed|signed\s+out)\b|\bfmi\s+(?:off|removed)\b",
     "proof_no_icloud_lock": r"\bno\s+icloud\s+lock(?:ed)?\b|\bnot\s+icloud\s+lock(?:ed)?\b",
     "proof_touch_works": r"\btouch\s+(?:works|working|is\s+working)\b",
-    "proof_display_works": r"\bdisplay\s+(?:works|working|is\s+working)\b|\blcd\s+(?:works|working|is\s+working)\b|\boled\s+(?:works|working|is\s+working)\b",
-    "proof_fully_functional_except_issue": r"\bfully\s+functional\s+except\b|\beverything\s+works\s+except\b|\bonly\s+issue\s+is\b",
+    "proof_display_works": r"\bdisplay\s+(?:works|working|is\s+working)\b|\blcd\s+(?:works|working|is\s+working|functional)\b|\boled\s+(?:works|working|is\s+working|functional)\b|\blcd/oled\s+(?:has\s+no\s+issues|no\s+issues|fully\s+functional)\b",
+    "proof_fully_functional_except_issue": r"\bfully\s+functional\s+except\b|\beverything\s+works\s+except\b|\beverything\s+else\s+remains\s+functional\b|\bonly\s+issue\s+is\b",
 }
 
 RISK_PATTERNS = {
@@ -162,7 +162,40 @@ SCREEN_PART_LISTING_PATTERN = re.compile(
     r"\b(?:oem\s+(?:screen|display)|(?:oled|lcd)\s+(?:screen|display)|screen\s+glass\s+oled(?:\s+lcd)?|display\s+(?:screen\s+)?(?:digitizer|replacement)|display\s+screen\s+replacement|screen\s+digitizer|good\s+(?:lcd|oled)(?:\s*&\s*touch)?|only\s+display|for\s+lcd\s+parts|screen\s+assembly|original\s+.*oled\s+screen)\b",
     re.IGNORECASE,
 )
+HIGH_CONFIDENCE_SCREEN_COMPONENT_PATTERN = re.compile(
+    r"\b(?:"
+    r"screen\s+display\s+assembly|screen\s+assembly|display\s+assembly|lcd\s+assembly|oled\s+assembly|"
+    r"oled\s+only|lcd\s+only|screen\s+only|display\s+only|"
+    r"replacement\s+(?:screen|display)|digitizer\s+assembly|front\s+glass\s+assembly|"
+    r"oem\s+(?:screen|display)|original\s+(?:screen|display)|"
+    r"(?:screen|display)\s+for\s+iphone|compatible\s+with\s+iphone|"
+    r"parts\s+only\s+screen|screen\s+replacement\s+part|good\s+(?:oled|lcd)\s+touch\s+works"
+    r")\b",
+    re.IGNORECASE,
+)
+WHOLE_PHONE_PROOF_PATTERN = re.compile(
+    r"\b(?:phone\s+works|device\s+works|works\s+great|fully\s+functional|tested\s+and\s+functional|powers?\s+on|turns?\s+on|boots?|clean\s+imei|clean\s+esn|ready\s+to\s+be\s+activated|face\s*id|icloud\s+(?:off|removed|signed\s+out)|fmi\s+off|no\s+icloud\s+lock)\b",
+    re.IGNORECASE,
+)
 FULL_DEVICE_PATTERN = re.compile(r"\b(?:phone|device|works|powers?\s+on|turns?\s+on|clean\s+imei|face\s*id)\b", re.IGNORECASE)
+COMPONENT_REJECT_PATTERN = re.compile(
+    r"\b(?:"
+    r"phone\s+(?:is\s+)?not\s+included|device\s+(?:is\s+)?not\s+included|"
+    r"screen\s+only|display\s+only|oled\s+only|lcd\s+only|"
+    r"screen\s+display\s+assembly|display\s+assembly|screen\s+assembly|"
+    r"for\s+flex\s+parts\s+only|flex\s+parts\s+only|"
+    r"replacement\s+screen|replacement\s+display|screen\s+for\s+iphone|"
+    r"housing\s+only|box\s+only|empty\s+box|back\s+glass\s+part\s+only|camera\s+only|(?<!bad\s)(?<!weak\s)battery\s+only"
+    r")\b",
+    re.IGNORECASE,
+)
+NORMAL_NOT_INCLUDED_ACCESSORY_PATTERN = re.compile(
+    r"\b(?:not\s+included|what'?s\s+not\s+included)\s*:?\s*(?:[-\s/]*(?:sim\s+card|charger|headphones?|original\s+box|box)){1,5}\b|"
+    r"\bno\s+(?:sim\s+card|charger|headphones?|box)\b|"
+    r"\bno\s+box\s+or\s+anything\s+else\s+included\b|"
+    r"\bpower\s+cables?\s+or\s+other\s+accessories\b",
+    re.IGNORECASE,
+)
 OLD_MODEL_PATTERN = re.compile(r"\biphone\s*(?:3g|3gs|4s?|5c|5s|5|6s?|7|8)(?:\s+plus)?\b", re.IGNORECASE)
 IPHONE_13_64GB_PATTERN = re.compile(r"\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b.*\b64\s*gb\b|\b64\s*gb\b.*\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b", re.IGNORECASE)
 IPHONE_13_5_5IN_PATTERN = re.compile(r"\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b.*\b5\.5\s*(?:in|inch|inches)\b|\b5\.5\s*(?:in|inch|inches)\b.*\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b", re.IGNORECASE)
@@ -320,6 +353,7 @@ def score_listing(
     profit_threshold: float = 75.0,
 ) -> ScoreResult:
     text = _listing_text(listing)
+    description_signals = extract_description_signals(listing)
     thresholds = (scoring_rules or {}).get("thresholds", {})
     min_score = float(min_score_to_alert or thresholds.get("min_score_to_alert", score_threshold))
     min_profit = float(min_profit_to_alert or thresholds.get("min_profit_to_alert", profit_threshold))
@@ -329,6 +363,7 @@ def score_listing(
     if "icloud_locked" in hard_flags and _has_no_icloud_lock_proof(text):
         hard_flags = [flag for flag in hard_flags if flag != "icloud_locked"]
     positive_flags = _match_flags(text, _patterns_from_rules(scoring_rules, "positive_keywords", POSITIVE_PATTERNS))
+    positive_flags = _dedupe([*positive_flags, *_positive_flags_from_description_signals(description_signals)])
     risk_flags = _match_flags(text, _patterns_from_rules(scoring_rules, "risk_keywords", RISK_PATTERNS))
     forced_issue_flag = _issue_flag_from_override(forced_issue_type)
     if forced_issue_flag:
@@ -337,7 +372,7 @@ def score_listing(
     if "no_power" in hard_flags or "does_not_turn_on" in hard_flags:
         positive_flags = [flag for flag in positive_flags if flag != "powers_on"]
         proof_flags = [flag for flag in proof_flags if flag != "proof_powers_on"]
-    classification = classify_whole_phone_listing(listing, positive_flags)
+    classification = classify_whole_phone_listing(listing, positive_flags, description_signals=description_signals)
     hard_flags = _dedupe([*hard_flags, *classification["suppress_flags"]])
     risk_flags = _dedupe([*risk_flags, *classification["risk_flags"]])
 
@@ -426,6 +461,28 @@ def score_listing(
     if not verification_eligible:
         alert_eligible = False
         alert_ineligible_reasons = _dedupe([*alert_ineligible_reasons, *verification_reasons])
+    model_verification_eligible, model_verification_reasons = _high_resale_model_verification_eligibility(
+        listing=listing,
+        model=model,
+        storage_capacity=storage["storage_capacity"],
+        resale=resale,
+        profit_mid=profit_mid,
+        parts_pricing_status=parts_pricing_status,
+        estimated_profit_available=estimated_profit_available,
+        proof_flags=proof_flags,
+    )
+    if not model_verification_eligible:
+        alert_eligible = False
+        alert_ineligible_reasons = _dedupe([*alert_ineligible_reasons, *model_verification_reasons])
+    storage_verification_eligible, storage_verification_reasons = _storage_unknown_verification_eligibility(
+        storage_capacity=storage["storage_capacity"],
+        resale=resale,
+        proof_flags=proof_flags,
+        estimated_profit_available=estimated_profit_available,
+    )
+    if not storage_verification_eligible:
+        alert_eligible = False
+        alert_ineligible_reasons = _dedupe([*alert_ineligible_reasons, *storage_verification_reasons])
 
     if hard_flags:
         score = -100.0
@@ -538,11 +595,24 @@ def score_listing(
     )
 
 
-def classify_whole_phone_listing(listing: dict[str, Any], positive_flags: list[str]) -> dict[str, Any]:
+def classify_whole_phone_listing(
+    listing: dict[str, Any],
+    positive_flags: list[str],
+    *,
+    description_signals: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     title = _normalize(str(listing.get("title") or ""))
+    description = _normalize(str(listing.get("raw_description") or ""))
     condition = _normalize(str(listing.get("condition") or ""))
     category = _listing_category_text(listing)
-    suppress_flags = _dedupe([*_match_flags(title, NOT_PHONE_PATTERNS), *_screen_part_suppress_flags(title)])
+    description_signals = description_signals or extract_description_signals(listing)
+    suppress_flags = _dedupe(
+        [
+            *_match_flags(title, NOT_PHONE_PATTERNS),
+            *_screen_part_suppress_flags(title),
+            *_description_component_suppress_flags(title, description, description_signals),
+        ]
+    )
     flags: list[str] = list(suppress_flags)
     score = 0.0
 
@@ -561,6 +631,14 @@ def classify_whole_phone_listing(listing: dict[str, Any], positive_flags: list[s
     if WHOLE_PHONE_CONDITION_PATTERN.search(condition):
         score += 1.0
         flags.append("used_or_parts_condition")
+    if description_signals.get("included_device_signals") or description_signals.get("whole_phone_evidence"):
+        score += 2.0
+        flags.append("description_whole_phone_evidence")
+    if description_signals.get("functionality_signals") or description_signals.get("clean_activation_signals"):
+        score += 1.0
+        flags.append("description_functionality_evidence")
+    if description_signals.get("normal_not_included_accessory_list"):
+        flags.append("normal_accessory_exclusions")
 
     has_specific_issue = bool(ACTUAL_REPAIR_ISSUE_FLAGS.intersection(positive_flags))
     has_generic_issue = bool(GENERIC_REPAIR_ISSUE_PATTERN.search(title))
@@ -651,8 +729,9 @@ def _listing_text(listing: dict[str, Any]) -> str:
         listing.get("title"),
         listing.get("condition"),
         listing.get("raw_description"),
+        _listing_signal_aspect_text(listing),
     ]
-    return _normalize(" ".join(str(field) for field in fields if field))
+    return _normalize(" . ".join(str(field) for field in fields if field))
 
 
 def _listing_category_text(listing: dict[str, Any]) -> str:
@@ -685,6 +764,215 @@ def _storage_aspect_text(listing: dict[str, Any]) -> str:
         if value:
             values.extend(_collect_storageish_values(value))
     return " ".join(str(value) for value in values if value)
+
+
+def _listing_signal_aspect_text(listing: dict[str, Any]) -> str:
+    raw_json = listing.get("raw_json") or {}
+    values = []
+    if isinstance(raw_json, dict):
+        values.extend(_collect_signal_values(raw_json))
+    for key in ("aspects", "localizedAspects", "itemSpecifics"):
+        value = listing.get(key)
+        if value:
+            values.extend(_collect_signal_values(value))
+    return " ".join(str(value) for value in values if value)
+
+
+def _collect_signal_values(value: Any, parent_key: str = "") -> list[str]:
+    values: list[str] = []
+    signal_key = bool(
+        re.search(
+            r"\b(?:shortdescription|conditiondescription|aspect|model|network|lock|carrier|battery|storage|included|features?|screen|camera|imei|esn|icloud|fmi|charge|touch|oled|lcd|condition)\b",
+            parent_key,
+            re.IGNORECASE,
+        )
+    )
+    if isinstance(value, dict):
+        name = value.get("name")
+        nested_value = value.get("value")
+        if name is not None and nested_value is not None:
+            values.append(f"{name}: {nested_value}")
+        for key, nested in value.items():
+            values.extend(_collect_signal_values(nested, str(key)))
+        return values
+    if isinstance(value, list):
+        for nested in value:
+            values.extend(_collect_signal_values(nested, parent_key))
+        return values
+    if value is None:
+        return values
+    text = str(value)
+    if signal_key or _signal_text_is_useful(text):
+        values.append(text)
+    return values
+
+
+def _signal_text_is_useful(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:iphone|unlocked|clean\s+imei|clean\s+esn|ready\s+to\s+be\s+activated|face\s*id|battery\s+health|powers?\s+on|phone\s+works|does\s+still\s+work|fully\s+functional|touch|digitizer|lcd|oled|camera|charge\s+port|included|not\s+included|cracked|bad\s+battery|weak\s+battery|non[-\s]?oem)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def extract_description_signals(listing: dict[str, Any]) -> dict[str, list[str]]:
+    title = str(listing.get("title") or "")
+    raw_description = str(listing.get("raw_description") or "")
+    aspect_text = _listing_signal_aspect_text(listing)
+    text = _normalize(" . ".join(part for part in (title, raw_description, aspect_text) if part))
+    description_text = _normalize(" . ".join(part for part in (raw_description, aspect_text) if part))
+    signals = {
+        "whole_phone_evidence": _whole_phone_evidence_signals(text),
+        "functionality_signals": _functionality_signals(text),
+        "included_device_signals": _included_device_signals(text),
+        "normal_not_included_accessory_list": _normal_not_included_accessory_signals(description_text),
+        "clean_activation_signals": _clean_activation_signals(text),
+        "repair_detail_signals": _repair_detail_signals(text),
+        "component_reject_signals": _component_reject_signals(text),
+    }
+    signals = {key: _dedupe(values) for key, values in signals.items()}
+    if (
+        "device_not_included" in signals["component_reject_signals"]
+        and signals["included_device_signals"]
+        and signals["normal_not_included_accessory_list"]
+    ):
+        signals["component_reject_signals"] = [
+            signal for signal in signals["component_reject_signals"] if signal != "device_not_included"
+        ]
+    return signals
+
+
+def _positive_flags_from_description_signals(signals: dict[str, list[str]]) -> list[str]:
+    flags: list[str] = []
+    repair = set(signals.get("repair_detail_signals") or [])
+    functionality = set(signals.get("functionality_signals") or [])
+    activation = set(signals.get("clean_activation_signals") or [])
+    if repair.intersection({"cracked_screen"}):
+        flags.append("cracked_screen")
+    if repair.intersection({"cracked_back", "cracked_back_glass"}):
+        flags.append("back_glass_cracked")
+    if repair.intersection({"bad_battery", "service_battery", "swollen_battery"}):
+        flags.append("bad_battery")
+    if repair.intersection({"bad_lcd", "non_oem_screen"}):
+        flags.append("screen_display_issue")
+    if repair.intersection({"bad_oled"}):
+        flags.append("bad_oled")
+    if repair.intersection({"charging_port_issue"}):
+        flags.append("charging_port_issue")
+    if functionality.intersection({"powers_on", "boots", "phone_works", "fully_functional", "tested_functional", "everything_else_functional"}):
+        flags.append("powers_on")
+    if functionality.intersection({"face_id_works"}):
+        flags.append("face_id_works")
+    if activation.intersection({"clean_imei", "clean_esn", "ready_to_activate"}):
+        flags.append("clean_imei")
+    return _dedupe(flags)
+
+
+def _included_device_signals(text: str) -> list[str]:
+    patterns = {
+        "items_included_iphone": r"\bitems\s+included\s+in\s+this\s+sale\s*:?\s*.{0,180}\b(?:apple\s+)?iphone\b",
+        "whats_included_phone": r"\bwhat'?s\s+included\s*:?\s*-?\s*phone\b",
+        "included_device": r"\bincluded\s*:?\s*device\b|\bdevice\s+included\b",
+        "iphone_only": r"\biphone\s+only\b",
+        "phone_only": r"\bphone\s+only\b",
+    }
+    return [name for name, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _whole_phone_evidence_signals(text: str) -> list[str]:
+    patterns = {
+        "iphone_title_or_specs": r"\b(?:apple\s+)?iphone\b",
+        "actual_item": r"\bactual\s+item\s+(?:being\s+offered|you\s+receive)\b",
+        "cell_phone_aspect": r"\btype\s*:?\s*iphone\b|\bmodel\s*:?\s*(?:apple\s+)?iphone\b",
+        "factory_unlocked": r"\bfactory\s+unlocked\b|\bnetwork\s*:?\s*unlocked\b|\bcarrier\s+service\s+unlocked\b",
+    }
+    return [name for name, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _functionality_signals(text: str) -> list[str]:
+    patterns = {
+        "powers_on": r"\bpowers?\s+on\b|\bphone\s+charges\s+and\s+powers?\s+on\b",
+        "boots": r"\bboots?\b",
+        "charges": r"\bcharges\b|\bphone\s+charges\b",
+        "charge_port_functional": r"\bcharge\s+port\s+(?:is\s+)?(?:clean\s+and\s+)?fully\s+functional\b",
+        "fully_functional": r"\bfully\s+functional\b",
+        "tested_functional": r"\btested\s+and\s+(?:fully\s+)?functional\b",
+        "phone_works": r"\bphone\s+works\b|\bdoes\s+still\s+work\b|\bdevice\s+works\b",
+        "everything_else_functional": r"\beverything\s+else\s+remains\s+functional\b|\beverything\s+works\s+except\b",
+        "face_id_works": r"\bface\s*id\s+(?:works|working|functions?\s+properly|works?\s+as\s+expected|is\s+ready\s+to\s+be\s+set\s+up)\b",
+        "cameras_functional": r"\b(?:front\s+and\s+rear\s+)?cameras?\s+(?:are\s+)?(?:fully\s+)?functional\b|\bcameras?\s+works?\b|\bcameras?\s+are\s+in\s+good\s+shape\b",
+        "touch_functional": r"\btouch\s+(?:works|working|functional)\b|\bdigitizer\s+\(?(?:touch\s+screen)?\)?\s+responds\s+to\s+touch\b",
+        "display_functional": r"\b(?:lcd|oled|lcd/oled|display)\s+(?:has\s+no\s+issues|no\s+issues|fully\s+functional|works|working|functional)\b",
+        "battery_health": r"\bbattery\s+health\s*:?\s*\d{1,3}\s*%",
+    }
+    return [name for name, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _clean_activation_signals(text: str) -> list[str]:
+    patterns = {
+        "clean_imei": r"\bclean\s+imei\b",
+        "clean_esn": r"\bclean\s+esn\b",
+        "ready_to_activate": r"\bready\s+to\s+be\s+activated\b",
+        "fmi_off": r"\bfmi\s+(?:off|removed)\b",
+        "icloud_off": r"\bicloud\s+(?:off|removed|signed\s+out)\b",
+        "no_icloud": r"\bno\s+icloud\b|\bno\s+icloud\s+lock(?:ed)?\b",
+    }
+    return [name for name, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _repair_detail_signals(text: str) -> list[str]:
+    patterns = {
+        "cracked_screen": r"\bcracked\s+screen\b|\bfront\s+screen\s+is\s+cracked\b|\bscreen\s+(?:is\s+)?cracked\b",
+        "cracked_back": r"\bcracked\s+back\b",
+        "cracked_back_glass": r"\bback\s+glass\s+(?:is\s+)?cracked\b|\bcracked\s+back\s+glass\b",
+        "bad_battery": r"\bbad\s+battery\b",
+        "weak_battery": r"\bweak\s+battery\b",
+        "service_battery": r"\bbattery\s+needs\s+to\s+be\s+serviced\b|\bservice\s+battery\b",
+        "bad_lcd": r"\bbad\s+lcd\b|\blcd\s+is\s+bad\b",
+        "bad_oled": r"\bbad\s+oled\b|\boled\s+is\s+bad\b",
+        "non_oem_screen": r"\bnon[-\s]?oem\s+screen\b|\bnon\s+apple\s+screen\b",
+        "deep_scratches": r"\bdeep\s+scratches\b|\bscratches\s+are\s+semi\s+deep\b",
+        "charging_port_issue": r"\bcharging\s+port\s+(?:issue|problem|bad|broken)\b|\bdoes\s+not\s+charge\b",
+        "swollen_battery": r"\bswollen\s+battery\b",
+        "no_ic_read": r"\bno\s+ic\s+read\b",
+        "ic_issue": r"\bic\s+(?:issue|problem|bad)\b|\bbad\s+ic\b",
+    }
+    return [name for name, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _component_reject_signals(text: str) -> list[str]:
+    patterns = {
+        "phone_not_included": r"\bphone\s+(?:is\s+)?not\s+included\b",
+        "device_not_included": r"\bdevice\s+(?:is\s+)?not\s+included\b",
+        "screen_only": r"\bscreen\s+only\b",
+        "display_only": r"\bdisplay\s+only\b",
+        "oled_only": r"\boled\s+only\b",
+        "lcd_only": r"\blcd\s+only\b",
+        "display_assembly": r"\bdisplay\s+assembly\b|\bscreen\s+display\s+assembly\b|\bscreen\s+assembly\b",
+        "flex_parts_only": r"\bfor\s+flex\s+parts\s+only\b|\bflex\s+parts\s+only\b",
+        "replacement_screen": r"\breplacement\s+screen\b|\breplacement\s+display\b|\bscreen\s+for\s+iphone\b",
+        "housing_only": r"\bhousing\s+only\b",
+        "box_only": r"\bbox\s+only\b|\bempty\s+box\b",
+        "part_only": r"\bback\s+glass\s+part\s+only\b|\bcamera\s+only\b|(?<!bad\s)(?<!weak\s)\bbattery\s+only\b",
+    }
+    return [name for name, pattern in patterns.items() if re.search(pattern, text, re.IGNORECASE)]
+
+
+def _normal_not_included_accessory_signals(text: str) -> list[str]:
+    signals = []
+    if NORMAL_NOT_INCLUDED_ACCESSORY_PATTERN.search(text):
+        signals.append("normal_accessories_not_included")
+    for name, pattern in {
+        "sim_card_not_included": r"\b(?:not\s+included|no)\s*:?\s*(?:[-\s/]*sim\s+card|sim\s+card)\b",
+        "charger_not_included": r"\b(?:not\s+included|no)\s*:?\s*(?:[-\s/]*charger|charger)\b",
+        "headphones_not_included": r"\b(?:not\s+included|no)\s*:?\s*(?:[-\s/]*headphones?|headphones?)\b",
+        "box_not_included": r"\b(?:not\s+included|no)\s*:?\s*(?:[-\s/]*(?:original\s+)?box|(?:original\s+)?box)\b|\bno\s+box\b",
+    }.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            signals.append(name)
+    return signals
 
 
 def _collect_storageish_values(value: Any, parent_key: str = "") -> list[str]:
@@ -754,11 +1042,17 @@ def _suspicious_spec_flags(text: str, model: str) -> list[str]:
 
 
 def _screen_part_suppress_flags(title: str) -> list[str]:
-    if not PARTS_ONLY_PATTERN.search(title) and not SCREEN_PART_LISTING_PATTERN.search(title):
+    high_confidence_component = bool(HIGH_CONFIDENCE_SCREEN_COMPONENT_PATTERN.search(title))
+    if not high_confidence_component and not PARTS_ONLY_PATTERN.search(title) and not SCREEN_PART_LISTING_PATTERN.search(title):
         return []
     if not DISPLAY_PART_PATTERN.search(title):
         return []
-    if STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title) or FULL_DEVICE_PATTERN.search(title):
+    if STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title):
+        return []
+    if high_confidence_component:
+        if WHOLE_PHONE_PROOF_PATTERN.search(title):
+            return []
+    elif FULL_DEVICE_PATTERN.search(title):
         return []
 
     flags = ["screen_part_not_phone"]
@@ -771,6 +1065,106 @@ def _screen_part_suppress_flags(title: str) -> list[str]:
     if re.search(r"\b(?:cracked\s+glass|screen\s+glass|glass\s+assembly)\b", title, re.IGNORECASE):
         flags.append("glass_only_not_phone")
     return flags
+
+
+def _description_component_suppress_flags(title: str, description: str, description_signals: dict[str, list[str]] | None = None) -> list[str]:
+    if not description:
+        return []
+    description_signals = description_signals or {}
+    component_signals = set(description_signals.get("component_reject_signals") or [])
+    if not component_signals:
+        return []
+    combined = f"{title} {description}"
+    flags = ["screen_part_not_phone"] if DISPLAY_PART_PATTERN.search(combined) or component_signals.intersection(
+        {"screen_only", "display_only", "oled_only", "lcd_only", "display_assembly", "replacement_screen", "flex_parts_only"}
+    ) else ["replacement_part_not_phone"]
+    if re.search(r"\b(?:oled|lcd)\b", combined, re.IGNORECASE) or component_signals.intersection({"oled_only", "lcd_only"}):
+        flags.append("oled_lcd_part_not_phone")
+    if re.search(r"\b(?:assembly|display|screen)\b", combined, re.IGNORECASE) or component_signals.intersection(
+        {"display_assembly", "screen_only", "display_only", "replacement_screen"}
+    ):
+        flags.append("display_assembly_not_phone")
+    if component_signals.intersection({"housing_only"}):
+        flags.append("housing_not_phone")
+    if component_signals.intersection({"box_only"}):
+        flags.append("accessory_not_phone")
+    if component_signals.intersection({"part_only"}):
+        flags.append("battery_part_not_phone")
+    return flags
+
+
+def _high_resale_model_verification_eligibility(
+    *,
+    listing: dict[str, Any],
+    model: str,
+    storage_capacity: str | None,
+    resale: dict[str, Any],
+    profit_mid: float,
+    parts_pricing_status: str,
+    estimated_profit_available: bool,
+    proof_flags: list[str],
+) -> tuple[bool, list[str]]:
+    if not estimated_profit_available or model == "unknown":
+        return True, []
+    resale_mid = float(resale.get("mid") or 0)
+    if not _is_high_resale_or_new_model(model, resale_mid, profit_mid):
+        return True, []
+    if parts_pricing_status in VERIFIED_PART_STATUSES and (storage_capacity or len(proof_flags) >= 2):
+        return True, []
+    if parts_pricing_status in {"fallback", "estimated", "verified_screenshot_low_confidence", "manual_part_update"}:
+        return False, ["High-resale model needs stronger verification"]
+    if not storage_capacity and not _has_structured_model_confirmation(listing):
+        return False, ["High-resale model needs stronger verification"]
+    return True, []
+
+
+def _storage_unknown_verification_eligibility(
+    *,
+    storage_capacity: str | None,
+    resale: dict[str, Any],
+    proof_flags: list[str],
+    estimated_profit_available: bool,
+) -> tuple[bool, list[str]]:
+    if not estimated_profit_available or storage_capacity:
+        return True, []
+    if resale.get("source") not in {"model_range", "legacy_resale_value"}:
+        return True, []
+    if len(proof_flags) >= 2:
+        return True, []
+    return False, ["Storage unknown needs review"]
+
+
+def _is_high_resale_or_new_model(model: str, resale_mid: float, profit_mid: float) -> bool:
+    if re.match(r"\biphone\s+1[6-9]\b", model, re.IGNORECASE):
+        return True
+    return resale_mid >= 1000 or profit_mid >= 300
+
+
+def _has_structured_model_confirmation(listing: dict[str, Any]) -> bool:
+    raw_json = listing.get("raw_json") or {}
+    if not isinstance(raw_json, dict):
+        return False
+    blob = _normalize(" ".join(str(value) for value in _collect_modelish_values(raw_json) if value))
+    return bool(blob and IPHONE_TITLE_PATTERN.search(blob))
+
+
+def _collect_modelish_values(value: Any, parent_key: str = "") -> list[str]:
+    values: list[str] = []
+    model_key = bool(re.search(r"\b(?:model|product|phone)\b", parent_key, re.IGNORECASE))
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            values.extend(_collect_modelish_values(nested, str(key)))
+        return values
+    if isinstance(value, list):
+        for nested in value:
+            values.extend(_collect_modelish_values(nested, parent_key))
+        return values
+    if value is None:
+        return values
+    text = str(value)
+    if model_key or IPHONE_TITLE_PATTERN.search(text):
+        values.append(text)
+    return values
 
 
 def _patterns_from_rules(
@@ -1189,6 +1583,39 @@ def _manual_review_reasons(
         reasons.append("Read description listing")
     if storage_resale_warning:
         reasons.append(storage_resale_warning)
+    classification_flags = set(classification.get("flags") or [])
+    description_supports_review = bool(
+        classification_flags.intersection(
+            {
+                "description_functionality_evidence",
+                "normal_accessory_exclusions",
+            }
+        )
+    )
+    pricing_blocks_best_pick = (
+        not parts_cost_available
+        or not estimated_profit_available
+        or parts_pricing_status in UNVERIFIED_PART_STATUSES
+        or any(
+            reason in (alert_ineligible_reasons or [])
+            for reason in (
+                "Expected profit below threshold",
+                "Only upside case works",
+                "Low-confidence pricing needs stronger profit",
+                "Profit depends on mint resale",
+            )
+        )
+    )
+    if (
+        description_supports_review
+        and classification["whole_phone_confidence_passed"]
+        and classification["has_repair_issue"]
+        and not classification["suppress_flags"]
+    ):
+        reasons.append("Description supports whole-phone review")
+        if pricing_blocks_best_pick:
+            reasons.append("Pricing confidence prevents Best Pick")
+            reasons.append("Reviewable despite parts/pricing gap")
     risk_reason_labels = {
         "ic_issue": "IC issue risk",
         "no_ic_read": "No IC READ",

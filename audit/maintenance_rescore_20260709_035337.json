@@ -1,0 +1,188 @@
+{
+  "alert_eligibility_changes": 0,
+  "alert_eligible_false_to_true": 0,
+  "alert_eligible_true_to_false": 0,
+  "candidates_downgraded": 0,
+  "dry_run": true,
+  "mode": "maintenance_rescore",
+  "needs_data_changed": 1,
+  "reason": "learning audit report-only stored-items dry run",
+  "rejected_changed": 0,
+  "risky_downgraded": 0,
+  "risky_upgraded": 0,
+  "sample_changed_rows": [
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|158067232486|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Low-confidence pricing needs stronger profit; Profit depends on mint resale; High-resale model needs stronger verification; Parts estimate not verified",
+      "persisted_score": 100.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; High-resale model needs stronger verification; Parts estimate not verified; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": 100.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 16 - 128GB - Pink (T-Mobile) -Non OEM -  Cracked Screen"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 12.0,
+      "item_id": "v1|298490998367|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 58.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": 80.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 15 Pro 256GB Blue Titanium UNLOCKED (Cracked screen, phone works)"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 9.0,
+      "item_id": "v1|307050354805|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Only upside case works; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 73.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": 78.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 15 - 128GB - Green (Unlocked) - CRACKED BACK, NON OEM SCREEN"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 9.0,
+      "item_id": "v1|127964300103|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 64.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": 98.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 13 128GB Black Damaged Cracked Screen DOES STILL WORK ~  For Parts?"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|178173192434|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": -100.0,
+      "persisted_status": "rejected",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": -100.0,
+      "rescored_status": "rejected",
+      "title": "UNLOCKED Apple iPhone 15 128GB Black Bad OLED Cracked Screen Back Parts / Repair"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|178173146967|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified",
+      "persisted_score": -100.0,
+      "persisted_status": "rejected",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; High-resale model needs stronger verification; Parts estimate not verified; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": -100.0,
+      "rescored_status": "rejected",
+      "title": "T-Mobile Apple iPhone 16 128GB Black Cracked Glass Front + Back Black Spot Parts"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|800086544988|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Only upside case works; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 86.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": 100.0,
+      "rescored_status": "risky",
+      "title": "Broken Unlocked Apple iPhone 15 Plus eSIM 128GB 26.0 MTXR3LL/A Cracked Back"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|287359768873|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing",
+      "persisted_score": 86.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Only upside case works; Conservative profit is negative; Low-confidence pricing needs stronger profit; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap",
+      "rescored_score": 86.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 15 Plus 128GB \u2013 UNLOCKED \u2013 87% Battery \u2013Cracked Back Deep Scratches"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 10.0,
+      "item_id": "v1|377217833231|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Expected profit below threshold; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Best Offer available",
+      "persisted_score": 46.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Expected profit below threshold; Profit depends on mint resale; Parts estimate not verified; Low-confidence pricing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap; Best Offer available",
+      "rescored_score": 68.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 15 128GB AT&T Locked Cracked Back Phone Works Great 87% Battery"
+    },
+    {
+      "changed_reasons": [
+        "manual_review_reason_changed"
+      ],
+      "confidence": 12.0,
+      "item_id": "v1|117220100178|0",
+      "persisted_alert_eligible": false,
+      "persisted_manual_review_reason": "Parts-only ambiguous; Parts estimate not verified; Read description listing; Best Offer available",
+      "persisted_score": 73.0,
+      "persisted_status": "risky",
+      "rescored_alert_eligible": false,
+      "rescored_manual_review_reason": "Parts-only ambiguous; Parts estimate not verified; Read description listing; Description supports whole-phone review; Pricing confidence prevents Best Pick; Reviewable despite parts/pricing gap; Best Offer available",
+      "rescored_score": 73.0,
+      "rescored_status": "risky",
+      "title": "Apple iPhone 13 Pro Max 256GB Gold Unlocked Clean ESN Read Description"
+    }
+  ],
+  "scan_cycle_id": null,
+  "score_changes": 5,
+  "skipped_count": 113,
+  "skipped_reasons": {
+    "limit_excluded": 113
+  },
+  "status_changes": 0,
+  "total_rescored": 50,
+  "total_selected": 50,
+  "unchanged_count": 40,
+  "write": false,
+  "write_traces": false,
+  "written_count": 0
+}
