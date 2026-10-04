@@ -275,31 +275,103 @@ function StorageBadges({ item }) {
 }
 
 function ExpandedDetails({ item, isAdmin, onUpdatePartCost, onUpdateGlobalPartCost, onSaveCorrection, onClearCorrection, onOutcome }) {
+  const description = cleanDescription(item.raw_description) || "Description not available from API.";
   return (
-    <div className="expanded-details">
-      <DescriptionDetail text={cleanDescription(item.raw_description) || "Description not available from API."} />
-      <RepairValuesDetail item={item} isAdmin={isAdmin} onUpdatePartCost={onUpdatePartCost} onUpdateGlobalPartCost={onUpdateGlobalPartCost} />
-      <ItemCorrectionDetail item={item} onSaveCorrection={onSaveCorrection} onClearCorrection={onClearCorrection} />
-      <OutcomeEditor key={item.item_id} item={item} onSave={onOutcome} />
-      <Detail label="Item type reason" text={item.item_type_reason} />
-      <Detail label="Good resale range" text={goodResaleRangeText(item)} />
-      <Detail label="Good profit range" text={goodProfitRangeText(item)} />
-      <Detail label="Mint resale range" text={mintResaleRangeText(item)} />
-      <Detail label="Mint profit range" text={mintProfitRangeText(item)} />
-      <Detail label="Item specifics" values={itemSpecifics(item)} />
-      <Detail label="Availability" text={availabilityText(item)} />
-      <Detail label="Buying options" text={buyingOptionText(item)} />
-      <Detail label="Item end time" text={item.item_end_at} />
-      <Detail label="Detail check age" text={item.detail_check_age_label || "Detail check unknown"} />
-      <Detail label="Context labels" values={contextLabelFlags(item)} />
-      <Detail label="Risk phrases found" values={riskPhraseFlags(item)} danger />
-      <Detail label="Proof signals found" values={item.positive_flags} />
-      <Detail label="Classification flags" values={item.listing_classification_flags} />
-      <Detail label="Reject flags" values={item.hard_reject_flags} danger />
-      <Detail label="Raw warning/review reasons" text={item.manual_review_reason || item.pricing_warning} />
-      <Detail label="Storage source" text={storageSourceText(item)} />
-      <Detail label="Resale source" text={resaleSourceText(item)} />
-      <Detail label="Mint upside only" text={mintUpsideText(item)} />
+    <div className="expanded-details-v2">
+      <div className="detail-overview-grid">
+        <section className="detail-panel detail-panel-description">
+          <div className="detail-panel-heading">
+            <div>
+              <span className="detail-eyebrow">Listing context</span>
+              <h4>Seller description</h4>
+            </div>
+            <span className="detail-panel-meta">{description === "Description not available from API." ? "Unavailable" : "From eBay"}</span>
+          </div>
+          <div className="description-scroll description-scroll-premium">{description}</div>
+        </section>
+
+        <section className="detail-panel">
+          <div className="detail-panel-heading">
+            <div>
+              <span className="detail-eyebrow">Decision support</span>
+              <h4>Deal intelligence</h4>
+            </div>
+            <span className="detail-panel-meta">Current estimate</span>
+          </div>
+          <div className="detail-fact-grid">
+            <DetailFact label="Listing type" value={item.item_type_reason || formatFlag(item.item_type || "unknown")} />
+            <DetailFact label="Good resale" value={goodResaleRangeText(item)} />
+            <DetailFact label="Good profit" value={goodProfitRangeText(item)} tone="profit" />
+            <DetailFact label="Mint resale" value={mintResaleRangeText(item)} />
+            <DetailFact label="Mint profit" value={mintProfitRangeText(item)} tone="profit" />
+            <DetailFact label="Resale source" value={resaleSourceText(item)} />
+          </div>
+        </section>
+      </div>
+
+      <DetailSection
+        title="Repair & corrections"
+        subtitle="Part-cost assumptions and one-off listing corrections"
+      >
+        <div className="detail-editor-stack">
+          <RepairValuesDetail item={item} isAdmin={isAdmin} onUpdatePartCost={onUpdatePartCost} onUpdateGlobalPartCost={onUpdateGlobalPartCost} />
+          <ItemCorrectionDetail item={item} onSaveCorrection={onSaveCorrection} onClearCorrection={onClearCorrection} />
+        </div>
+      </DetailSection>
+
+      <DetailSection
+        title="Business outcome"
+        subtitle="Only needed after you skip, buy, repair, or sell this phone"
+      >
+        <OutcomeEditor key={item.item_id} item={item} onSave={onOutcome} />
+      </DetailSection>
+
+      <DetailSection
+        title="Evidence & diagnostics"
+        subtitle="Classification, proof signals, risk phrases, and source lineage"
+      >
+        <div className="diagnostic-grid">
+          <Detail label="Item specifics" values={itemSpecifics(item)} />
+          <Detail label="Availability" text={availabilityText(item)} />
+          <Detail label="Buying options" text={buyingOptionText(item)} />
+          <Detail label="Item end time" text={item.item_end_at} />
+          <Detail label="Detail check age" text={item.detail_check_age_label || "Detail check unknown"} />
+          <Detail label="Context labels" values={contextLabelFlags(item)} />
+          <Detail label="Risk phrases found" values={riskPhraseFlags(item)} danger />
+          <Detail label="Proof signals found" values={item.positive_flags} />
+          <Detail label="Classification flags" values={item.listing_classification_flags} />
+          <Detail label="Reject flags" values={item.hard_reject_flags} danger />
+          <Detail label="Review reason" text={item.manual_review_reason || item.pricing_warning} />
+          <Detail label="Storage source" text={storageSourceText(item)} />
+          <Detail label="Resale source" text={resaleSourceText(item)} />
+          <Detail label="Mint upside only" text={mintUpsideText(item)} />
+        </div>
+      </DetailSection>
+    </div>
+  );
+}
+
+function DetailSection({ title, subtitle, children, open = false }) {
+  return (
+    <details className="detail-section" open={open}>
+      <summary>
+        <div className="detail-section-copy">
+          <strong>{title}</strong>
+          <span>{subtitle}</span>
+        </div>
+        <span className="detail-section-chevron" aria-hidden="true">⌄</span>
+      </summary>
+      <div className="detail-section-body">{children}</div>
+    </details>
+  );
+}
+
+function DetailFact({ label, value, tone = "default" }) {
+  if (!value) return null;
+  return (
+    <div className={`detail-fact detail-fact-${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
     </div>
   );
 }
