@@ -5,17 +5,17 @@ This is the deployment contract for the current cloud-ready application. Every f
 ```text
 React static host --HTTPS--> FastAPI API ----+----> managed PostgreSQL
                                               |
-                              scanner worker --+-- retention daily job
+                         scan cron (10 min) ---+--- retention daily cron
 ```
 
-Use one backend image for all roles. The API serves HTTP only; the scanner serves no HTTP. The scanner's `background_poll` database lease chooses one scheduler if two scanner instances overlap, and the separate global scan lease serializes scan work. Retention uses its own lease. No Redis or shared filesystem is required.
+Use one backend image for all roles. The API serves HTTP only; the scan cron and retention cron serve no HTTP. `python -m backend.scanner --once` claims the `background_poll` database lease for one invocation, and the separate global scan lease serializes scan work with manual scans. Retention uses its own lease. No Redis or shared filesystem is required. The continuous `python -m backend.scanner` command remains available for platforms with a dedicated worker service.
 
 ## Deployment order
 
 1. Create an **empty** managed PostgreSQL database. Set `DB_BACKEND=postgres`, `DATABASE_URL`, and server secrets in the host's environment/secret manager. Never use the historical database URL.
-2. Run **one explicit migration job** with `NOTIFIERR_ENV=production NOTIFIERR_ROLE=migrate` and the backend image: `alembic upgrade head`. Supply the shared database/auth/encryption environment required by production validation. It must finish before API, scanner, or retention start. Normal processes check schema revision and never apply migrations.
+2. Run **one explicit migration command** with `NOTIFIERR_ENV=production NOTIFIERR_ROLE=migrate` and the backend image: `python -m alembic upgrade head`. Supply the shared database/auth/encryption environment required by production validation. It must finish before API, scanner, or retention start. Normal processes check schema revision and never apply migrations. On a two-job Northflank Sandbox, run this manually before scheduling the two recurring jobs; do not reserve a third recurring job slot for migrations.
 3. Start the API with `NOTIFIERR_ENV=production NOTIFIERR_ROLE=api` and `python -m backend.api`. It checks schema and connectivity at startup, then bootstraps `ADMIN_EMAIL` / `ADMIN_PASSWORD` if no admin exists. Use a strong generated password, then rotate it after first login. The current guard requires these values on API restart too; retain them in the secret manager until a separate bootstrap command is added.
-4. Log in as owner, set user search/notification settings, and enable that user's background polling. Start the scanner with `NOTIFIERR_ENV=production NOTIFIERR_ROLE=scanner BACKGROUND_POLL_ENABLED=true python -m backend.scanner`. Set `BACKGROUND_POLL_ENABLED=true` on the API too for accurate status reporting; the API role never starts the poll loop. Match polling and active-window environment across API and scanner.
+4. Log in as owner, set user search/notification settings, and enable that user's background polling. Schedule `python -m backend.scanner --once` every 10 minutes with `NOTIFIERR_ENV=production NOTIFIERR_ROLE=scanner BACKGROUND_POLL_ENABLED=true`. Set `BACKGROUND_POLL_ENABLED=true` on the API too for accurate status reporting; the API role never starts the poll loop. Match polling and active-window environment across API and scan cron.
 5. Run retention daily as a one-shot job with `NOTIFIERR_ENV=production NOTIFIERR_ROLE=retention python -m backend.retention --configured --apply`. Omit `--apply` for a manual dry run. Never point it at the historical database.
 6. Build the frontend with `VITE_API_BASE_URL=https://<public-api-host>` and deploy `frontend/dist` to static hosting. Set API `CORS_ALLOWED_ORIGINS` to the exact frontend HTTPS origin and `TRUSTED_HOSTS` to its public API host.
 7. Generate Web Push keys once with `python -m backend.scripts.generate_vapid_keys`. Store all three printed values in the backend secret manager. `VAPID_PRIVATE_KEY_B64` and `APP_ENCRYPTION_KEY` are server-only. After login, install the PWA and use Settings to subscribe each device and send a test push.
@@ -24,9 +24,9 @@ The API and retention fail on missing/behind/unknown Alembic revisions; none mut
 
 ## Container and commands
 
-Build once from the repository root: `docker build -t notifierr-backend .`. The image uses pinned runtime package versions, a nonroot user, and copies only backend source, deploy JSON, and Alembic files. `.env`, SQLite files, audit output, and local logs are excluded. Default command: `python -m backend.api`. Override with `python -m backend.scanner`, `python -m backend.retention --configured --apply`, or `alembic upgrade head`. Configure the hosting platform's API readiness probe at `/health/ready`; scanner and scheduled-job health use their own process/lease/job status, so the shared image has no baked HTTP-only healthcheck.
+Build once from the repository root: `docker build -t notifierr-backend .`. The image uses pinned runtime package versions, a nonroot user, and copies only backend source, deploy JSON, and Alembic files. `.env`, SQLite files, audit output, and local logs are excluded. Default command: `python -m backend.api`. Override with `python -m backend.scanner`, `python -m backend.scanner --once`, `python -m backend.retention --configured --apply`, or `python -m alembic upgrade head`. Configure the hosting platform's API readiness probe at `/health/ready`; scheduled-job health uses exit status plus database evidence, so the shared image has no baked HTTP-only healthcheck.
 
-`python -m backend.api` accepts `HOST` (default `0.0.0.0`) and `PORT` (default `8000`), with one Uvicorn worker and no reload. Behind an HTTPS proxy, set `TRUSTED_PROXY_IPS` to that proxy's IP/CIDR values; the default trusts forwarded headers only from loopback. Termination signals stop the scanner and release its scheduler lease. An interrupted scan still uses the global scan lease expiry/recovery path.
+`python -m backend.api` accepts `HOST` (default `0.0.0.0`) and `PORT` (default `8000`), with one Uvicorn worker and no reload. Behind an HTTPS proxy, set `TRUSTED_PROXY_IPS` to that proxy's IP/CIDR values; the default trusts forwarded headers only from loopback. One-shot scanner completion, clean skips, and failures emit a final structured JSON record. It exits zero for success, disabled polling, no active users, an inactive window, or lease contention; configuration, database/schema, and uncaught scan failures exit nonzero. The scheduler lease is owner-released after every completed invocation, while an abruptly interrupted scan remains protected by lease expiry/recovery.
 
 ## Configuration inventory
 
@@ -54,13 +54,21 @@ Use HTTPS at the proxy and serve the API only through the trusted public host. T
 
 ## Local development
 
-Default `NOTIFIERR_ENV=local` keeps SQLite or local PostgreSQL and optional `.env` loading. Run `python -m backend.api` and `npm run dev` in `frontend`; without `VITE_API_BASE_URL` the Vite dev app uses `http://127.0.0.1:8000`. To run scanner separately, set `NOTIFIERR_ROLE=scanner`, `BACKGROUND_POLL_ENABLED=true`, and eBay credentials, then run `python -m backend.scanner`. Existing combined `uvicorn backend.main:app` and Windows Task Scheduler workflows still work locally. For isolated local retention dry run, use `python -m backend.retention --sqlite <migrated-local-db>`; add `--apply` only when intended.
+Default `NOTIFIERR_ENV=local` keeps SQLite or local PostgreSQL and optional `.env` loading. Run `python -m backend.api` and `npm run dev` in `frontend`; without `VITE_API_BASE_URL` the Vite dev app uses `http://127.0.0.1:8000`. To run scanner separately, set `NOTIFIERR_ROLE=scanner`, `BACKGROUND_POLL_ENABLED=true`, and eBay credentials, then run `python -m backend.scanner` continuously or `python -m backend.scanner --once` for one scheduled attempt. Existing combined `uvicorn backend.main:app` and Windows Task Scheduler workflows still work locally. For isolated local retention dry run, use `python -m backend.retention --sqlite <migrated-local-db>`; add `--apply` only when intended.
 
 ## Example service mapping
 
-Generic requirements are an always-on API, always-on scanner, managed PostgreSQL, daily scheduled job, and HTTPS static host. The runtime has no provider API dependency.
+The existing Northflank Sandbox already uses one service slot for JournalMe. Keep it untouched and use the remaining resources as follows:
 
-As checked on 2026-10-04, Northflank's Developer Sandbox is the closest one-project match: two always-on services, two jobs, and one database addon at $0. Map these to API, scanner, migration, retention, and fresh managed PostgreSQL; use Cloudflare Pages Free for the static frontend. Northflank requires a payment method for identity verification and describes Sandbox as a hobby/testing tier, so confirm the selected resources show $0 before creation and set billing alerts at the minimum supported threshold. Railway's post-trial Free plan supplies only a small monthly credit, Render's free PostgreSQL expires after 30 days, and Koyeb's free instance cannot be a worker; those alternatives do not honestly guarantee this architecture at $0. Provider login, repository authorization, account ownership, and card verification are external operator actions.
+| Northflank resource | Name | Command / schedule |
+| --- | --- | --- |
+| Existing service | `journalme-api` | Existing JournalMe configuration; no changes |
+| New service | `notifierr-api` | `python -m backend.api` |
+| New cron job | `notifierr-scan` | `python -m backend.scanner --once`, every 10 minutes |
+| New cron job | `notifierr-retention` | `python -m backend.retention --configured --apply`, daily |
+| New database addon | `notifierr-postgres` | Fresh PostgreSQL used only by Notifierr |
+
+Use Cloudflare Pages Free for the static frontend. Enable Northflank's no-overlap/concurrency-forbid option for `notifierr-scan`; the PostgreSQL leases remain authoritative if duplicate invocations still occur. Run `python -m alembic upgrade head` as an explicit manual deployment command before the new service or cron jobs; it is not a recurring third job. Confirm every selected resource shows $0 before creation and set billing alerts at the minimum supported threshold. Provider login, repository authorization, account ownership, and card verification are external operator actions.
 
 ## PWA and Web Push
 
