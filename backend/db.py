@@ -8,20 +8,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
 from .config import Settings, load_settings
+from .database_url import normalize_database_url
 from .db_models import metadata
 from .storage import PostgresStorage, Storage, _postgres_driver_connect_args
 
 
 DEFAULT_POOL_RECYCLE_SECONDS = 300
-
-
-def normalize_database_url(raw_url: str) -> str:
-    url = (raw_url or "").strip()
-    if not url:
-        raise ValueError("DATABASE_URL is required")
-    if url.startswith("postgres://"):
-        return f"postgresql://{url[len('postgres://'):]}"
-    return url
 
 
 def redact_database_url(raw_url: str | None) -> str:

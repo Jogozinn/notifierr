@@ -11,6 +11,7 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError as SAIntegrityError
 
 from .config import DEFAULT_KEYWORDS
+from .database_url import normalize_database_url
 from .db_models import metadata, scan_cycles, shared_scan_runs, shared_scan_searches, source_statuses, user_keywords, users
 from .scorer import now_iso
 from .outcomes import MONEY_FIELDS, actual_net_profit
@@ -5359,7 +5360,7 @@ class PostgresStorage(Storage):
     def __init__(self, database_url: str, *, initialize: bool = True):
         self.path = Path(":postgres:")
         self._memory_connection = None
-        self.database_url = _normalize_database_url(database_url)
+        self.database_url = normalize_database_url(database_url)
         self.engine = sa.create_engine(
             self.database_url,
             future=True,
@@ -6077,15 +6078,6 @@ def _should_refresh_availability(item: dict[str, Any]) -> bool:
     if item.get("user_status") in {"watched", "promoted"}:
         return True
     return _is_best_find_item(item) or _is_priority_review_item(item)
-
-
-def _normalize_database_url(database_url: str) -> str:
-    url = (database_url or "").strip()
-    if not url:
-        raise ValueError("DATABASE_URL is required")
-    if url.startswith("postgres://"):
-        return f"postgresql://{url[len('postgres://'):]}"
-    return url
 
 
 def _convert_qmark_sql(sql: str, params: list[Any]) -> tuple[str, dict[str, Any]]:

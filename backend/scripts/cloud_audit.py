@@ -10,6 +10,8 @@ from typing import Any
 
 import sqlalchemy as sa
 
+from backend.database_url import normalize_database_url
+
 
 TABLES = (
     "scan_cycles",
@@ -151,8 +153,7 @@ def _render_report(rows: dict[str, list[dict[str, Any]]], started_at: datetime) 
 def run(database_url: str, *, state_path: Path, output_dir: Path, limit: int, advance: bool) -> Path:
     if not database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
         raise ValueError("AUDIT_DATABASE_URL must be a PostgreSQL URL")
-    if database_url.startswith("postgres://"):
-        database_url = "postgresql://" + database_url[len("postgres://"):]
+    database_url = normalize_database_url(database_url)
     engine = sa.create_engine(
         database_url,
         pool_pre_ping=True,

@@ -5,12 +5,13 @@ import sqlite3
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 from alembic.config import Config
 
-from backend import db_check
+from backend import db as db_module, db_check
 from backend.config import Settings
-from backend.db import create_storage, redact_database_url, select_storage_class
+from backend.db import create_storage, normalize_database_url, redact_database_url, select_storage_class
 from backend.db_models import CORE_TABLES, metadata
 from backend.storage import PostgresStorage, Storage, _SQLAlchemyConnectionShim, _postgres_driver_connect_args
 from backend.tools import migrate_sqlite_to_postgres
@@ -40,6 +41,67 @@ def test_storage_selection_uses_postgres_when_configured():
         database_url="postgresql://user:secret@example.neon.tech/notifierr?sslmode=require",
     )
     assert select_storage_class(settings) is PostgresStorage
+
+
+@pytest.mark.parametrize(
+    ("raw_url", "expected"),
+    [
+        (
+            "postgresql://user:secret@example.test:5432/notifierr",
+            "postgresql+psycopg://user:secret@example.test:5432/notifierr",
+        ),
+        (
+            "postgres://user:secret@example.test:5432/notifierr",
+            "postgresql+psycopg://user:secret@example.test:5432/notifierr",
+        ),
+        (
+            "postgresql+psycopg://user:secret@example.test:5432/notifierr",
+            "postgresql+psycopg://user:secret@example.test:5432/notifierr",
+        ),
+        (
+            "postgresql://user:secret@example.test/notifierr?sslmode=require&application_name=notifierr",
+            "postgresql+psycopg://user:secret@example.test/notifierr?sslmode=require&application_name=notifierr",
+        ),
+        ("sqlite+pysqlite:///local.sqlite3", "sqlite+pysqlite:///local.sqlite3"),
+    ],
+)
+def test_database_url_normalization_selects_psycopg_v3_without_changing_url_data(raw_url, expected):
+    assert normalize_database_url(raw_url) == expected
+
+
+def test_postgres_storage_uses_normalized_psycopg_v3_url(monkeypatch):
+    captured = {}
+
+    def fake_create_engine(url, **kwargs):
+        captured.update(url=url, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr("backend.storage.sa.create_engine", fake_create_engine)
+    storage = PostgresStorage(
+        "postgresql://user:secret@example.test/notifierr?sslmode=require",
+        initialize=False,
+    )
+
+    assert storage.database_url == (
+        "postgresql+psycopg://user:secret@example.test/notifierr?sslmode=require"
+    )
+    assert captured["url"] == storage.database_url
+    assert captured["kwargs"]["connect_args"] == {"prepare_threshold": None}
+
+
+def test_alembic_database_url_uses_same_normalization(monkeypatch):
+    monkeypatch.setattr(
+        db_module,
+        "load_settings",
+        lambda: Settings(
+            db_backend="postgres",
+            database_url="postgres://user:secret@example.test/notifierr?sslmode=require",
+        ),
+    )
+
+    assert db_module.get_alembic_database_url() == (
+        "postgresql+psycopg://user:secret@example.test/notifierr?sslmode=require"
+    )
 
 
 def test_psycopg_auto_prepare_is_disabled_for_schema_safe_pooling():
