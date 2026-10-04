@@ -1,0 +1,25 @@
+{
+  "automation_id": "notifierr-learning-audit",
+  "last_run_completed_at": "2026-08-30T21:11:55.7161429Z",
+  "last_run_status": "completed_noop_empty_incremental_window",
+  "last_successful_cursor_utc": "2026-08-30T21:11:55.7161429Z",
+  "last_successful_report": "audit/learning-20260830-211155.md",
+  "last_window_cutoff_utc": "2026-08-30T15:10:25.8954626Z",
+  "recent_counts": {
+    "listing_decision_traces.created_at": 0,
+    "marketplace_items.found_at": 0,
+    "marketplace_items.updated_at": 0,
+    "notification_attempts.created_at": "missing table",
+    "scan_cycles.created_at": 0,
+    "scan_cycles.finished_at": 0,
+    "scan_cycles.started_at": 0,
+    "user_item_corrections.created_at": 0,
+    "user_item_corrections.updated_at": 0,
+    "user_item_states.alerted_at": 0,
+    "user_item_states.created_at": 0,
+    "user_item_states.updated_at": 0,
+    "marketplace_items.item_origin_at": 0,
+    "marketplace_items.item_creation_at": 0,
+    "marketplace_items.detail_fetch_attempted_at": "missing column"
+  }
+}

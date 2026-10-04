@@ -1,86 +1,136 @@
 import { autoscanStateLabel, formatAutoscanInterval } from "../autoscanStatus.js";
 
 const QUEUE_CARDS = [
-  { key: "high_quality", label: "GEM" },
-  { key: "profitable", label: "PROFITABLE" },
-  { key: "review", label: "REVIEW" },
-  { key: "unsent_actionable", label: "Unsent Actionable" },
-  { key: "missed_opportunities", label: "Missed Opportunities" },
-  { key: "priority_review", label: "Legacy Review" },
-  { key: "needs_data", label: "Needs Data" },
-  { key: "watched", label: "Watched" },
-  { key: "promoted", label: "Promoted" },
-  { key: "ignored", label: "Ignored" },
-  { key: "rejected", label: "Rejected" },
-  { key: "all", label: "All" },
+  { key: "high_quality", label: "GEM", tone: "emerald" },
+  { key: "profitable", label: "Profitable", tone: "green" },
+  { key: "review", label: "Review", tone: "amber" },
+  { key: "unsent_actionable", label: "Unsent", tone: "cyan" },
+  { key: "missed_opportunities", label: "Missed", tone: "rose" },
+  { key: "priority_review", label: "Legacy review", tone: "violet" },
+  { key: "needs_data", label: "Needs data", tone: "slate" },
+  { key: "watched", label: "Watched", tone: "blue" },
+  { key: "promoted", label: "Promoted", tone: "violet" },
+  { key: "ignored", label: "Ignored", tone: "slate" },
+  { key: "rejected", label: "Rejected", tone: "rose" },
+  { key: "all", label: "All", tone: "slate" },
 ];
 
 export default function StatsBar({ stats, pollingStatus, counts, activeStatus, onChange }) {
+  const state = pollingStatus?.state || "unknown";
   return (
     <section className="stats-panel" aria-label="Deal review queues">
       <div className="stats-grid">
         {QUEUE_CARDS.map((card) => (
           <button
-            className={card.key === activeStatus ? "stat-cell active" : "stat-cell"}
+            className={`stat-cell stat-tone-${card.tone}${card.key === activeStatus ? " active" : ""}`}
             key={card.key}
             onClick={() => onChange(card.key)}
             type="button"
           >
-            <span>{card.label}</span>
+            <span className="stat-label">{card.label}</span>
             <strong>{formatCount(stats, counts, card.key)}</strong>
           </button>
         ))}
       </div>
+
+      <div className="scan-command-strip">
+        <div className={`autoscan-state autoscan-${state}`} aria-live="polite">
+          <span className="status-dot" aria-hidden="true" />
+          <div>
+            <span className="status-kicker">Scanner</span>
+            <strong>{autoscanStateLabel(pollingStatus)}</strong>
+          </div>
+        </div>
+        <div className="scan-meta-grid">
+          <ScanMeta label="Background" value={formatTime(pollingStatus?.last_background_succeeded_at)} />
+          <ScanMeta label="Manual" value={formatTime(pollingStatus?.last_manual_succeeded_at)} />
+          <ScanMeta label="Next" value={formatTime(pollingStatus?.next_scheduled_at)} />
+          <ScanMeta label="Cadence" value={formatAutoscanInterval(pollingStatus?.effective_interval_seconds)} />
+          <ScanMeta label="Latest listing" value={formatLastScan(stats)} />
+        </div>
+        {(pollingStatus?.reason || pollingStatus?.last_error || pollingStatus?.last_skip_reason) ? (
+          <div className={`scan-state-note ${state === "running" ? "" : "scan-state-note-warning"}`}>
+            {pollingStatus?.reason || pollingStatus?.last_error || pollingStatus?.last_skip_reason}
+          </div>
+        ) : null}
+      </div>
+
       <div className="live-summary" aria-label="Live scan summary">
-        <span>Found today: <strong>{stats?.found_today ?? "Loading"}</strong></span>
-        <span>Fresh found: <strong>{stats?.fresh_found ?? "Loading"}</strong></span>
-        <span>Rejected today: <strong>{stats?.rejected_today ?? "Loading"}</strong></span>
-        <span>Stale hidden: <strong>{stats?.stale_items ?? "Loading"}</strong></span>
+        <SummaryChip label="Found today" value={stats?.found_today} />
+        <SummaryChip label="Fresh" value={stats?.fresh_found} />
+        <SummaryChip label="Rejected" value={stats?.rejected_today} />
+        <SummaryChip label="Stale hidden" value={stats?.stale_items} />
       </div>
+
       {stats?.scan_funnel?.cycle_id ? <ScanFunnel funnel={stats.scan_funnel} /> : null}
-      <div className={`autoscan-status autoscan-${pollingStatus?.state || "unknown"}`} aria-live="polite">
-        <strong>Autoscan: {autoscanStateLabel(pollingStatus)}</strong>
-        <span>Background: {formatTime(pollingStatus?.last_background_succeeded_at)}</span>
-        <span>Manual: {formatTime(pollingStatus?.last_manual_succeeded_at)}</span>
-        <span>Next: {formatTime(pollingStatus?.next_scheduled_at)}</span>
-        <span>Every: {formatAutoscanInterval(pollingStatus?.effective_interval_seconds)}</span>
-        {pollingStatus?.reason ? <span className={pollingStatus.state === "running" ? "" : "autoscan-warning"}>{pollingStatus.reason}</span> : null}
-        {!pollingStatus?.reason && pollingStatus?.last_error ? <span className="autoscan-warning">{pollingStatus.last_error}</span> : null}
-        {!pollingStatus?.reason && !pollingStatus?.last_error && pollingStatus?.last_skip_reason ? <span>{pollingStatus.last_skip_reason}</span> : null}
-      </div>
-      <div className="last-scan">Latest listing found: {formatLastScan(stats)}</div>
     </section>
+  );
+}
+
+function SummaryChip({ label, value }) {
+  return (
+    <span className="summary-chip">
+      <span>{label}</span>
+      <strong>{value ?? "—"}</strong>
+    </span>
+  );
+}
+
+function ScanMeta({ label, value }) {
+  return (
+    <div className="scan-meta">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
 function ScanFunnel({ funnel }) {
   const steps = [
-    ["Found", funnel.found], ["Unique", funnel.unique], ["Detail fetched", funnel.detail_fetched],
+    ["Found", funnel.found], ["Unique", funnel.unique], ["Detail", funnel.detail_fetched],
     ["Scored", funnel.scored], ["Whole phones", funnel.whole_phones],
-    ["Potentially profitable", funnel.potentially_profitable], ["GEM", funnel.gem],
-    ["PROFITABLE", funnel.profitable], ["REVIEW", funnel.review],
-    ["Alert attempted", funnel.alert_attempted], ["Alert sent", funnel.alert_sent],
+    ["Profit-ready", funnel.potentially_profitable], ["GEM", funnel.gem],
+    ["Profitable", funnel.profitable], ["Review", funnel.review],
+    ["Alert tried", funnel.alert_attempted], ["Sent", funnel.alert_sent],
   ];
   return (
     <div className="scan-funnel" aria-label={`Latest scan funnel cycle ${funnel.cycle_id}`}>
-      {steps.map(([label, value], index) => (
-        <span key={label}>{index ? "→ " : ""}{label}: <strong>{value ?? 0}</strong></span>
-      ))}
+      <div className="scan-funnel-header">
+        <span>Latest scan funnel</span>
+        <strong>Cycle {funnel.cycle_id}</strong>
+      </div>
+      <div className="scan-funnel-steps">
+        {steps.map(([label, value]) => (
+          <span className="funnel-step" key={label}>
+            <small>{label}</small>
+            <strong>{value ?? 0}</strong>
+          </span>
+        ))}
+      </div>
       {funnel.lost_reasons?.length ? (
-        <span className="funnel-losses">Main losses: {funnel.lost_reasons.map(([reason, count]) => `${reason} (${count})`).join(", ")}</span>
+        <div className="funnel-losses">
+          <span>Top filters</span>
+          <p>{funnel.lost_reasons.slice(0, 5).map(([reason, count]) => `${formatReason(reason)} ${count}`).join(" · ")}</p>
+        </div>
       ) : null}
     </div>
   );
+}
+
+function formatReason(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .toLowerCase()
+    .replace(/^./, (character) => character.toUpperCase());
 }
 
 function formatTime(value) {
   return value ? new Date(value).toLocaleString() : "Never";
 }
 
-
 function formatCount(stats, counts, key) {
   if (!stats) {
-    return "Loading";
+    return "—";
   }
   if (counts && key in counts) {
     return counts[key];

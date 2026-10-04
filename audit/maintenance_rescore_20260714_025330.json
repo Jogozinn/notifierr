@@ -1,0 +1,27 @@
+{
+  "alert_eligibility_changes": 0,
+  "alert_eligible_false_to_true": 0,
+  "alert_eligible_true_to_false": 0,
+  "candidates_downgraded": 0,
+  "dry_run": true,
+  "mode": "maintenance_rescore",
+  "needs_data_changed": 0,
+  "reason": "learning_audit_20260714_stored_limit50",
+  "rejected_changed": 0,
+  "risky_downgraded": 0,
+  "risky_upgraded": 0,
+  "sample_changed_rows": [],
+  "scan_cycle_id": null,
+  "score_changes": 0,
+  "skipped_count": 450,
+  "skipped_reasons": {
+    "limit_excluded": 450
+  },
+  "status_changes": 0,
+  "total_rescored": 50,
+  "total_selected": 50,
+  "unchanged_count": 50,
+  "write": false,
+  "write_traces": false,
+  "written_count": 0
+}

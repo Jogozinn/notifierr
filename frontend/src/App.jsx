@@ -704,9 +704,12 @@ export default function App() {
     return (
       <main className="app-shell auth-shell">
         <section className="auth-panel auth-panel-wide" aria-label="Authentication">
-          <div className="auth-copy">
-            <h1>Notifierr</h1>
-            <p>{firstUserSetupRequired ? "Create the owner account for this workspace." : "Private access required for the dashboard."}</p>
+          <div className="auth-copy auth-brand">
+            <div className="brand-mark" aria-hidden="true"><span>N</span></div>
+            <div>
+              <h1>Notifierr</h1>
+              <p>{firstUserSetupRequired ? "Create the owner account for this workspace." : "Private access to your acquisition intelligence workspace."}</p>
+            </div>
           </div>
           {error ? <div className="alert alert-error">{error}</div> : null}
           <div className="auth-grid">
@@ -791,9 +794,12 @@ export default function App() {
   return (
     <main className="app-shell">
       <header className="topbar workspace-topbar">
-        <div>
-          <h1>Notifierr</h1>
-          <p>Local broken-iPhone deal review workspace</p>
+        <div className="brand-lockup">
+          <div className="brand-mark" aria-hidden="true"><span>N</span></div>
+          <div>
+            <h1>Notifierr</h1>
+            <p>Repairable iPhone acquisition intelligence</p>
+          </div>
         </div>
         <div className="topbar-actions">
           <div className="topbar-nav">

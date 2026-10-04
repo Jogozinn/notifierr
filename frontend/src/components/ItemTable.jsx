@@ -29,127 +29,142 @@ export default function ItemTable({
   const [expandedIds, setExpandedIds] = useState(() => new Set());
 
   if (loading) {
-    return <div className="empty-state">Loading listings...</div>;
+    return <div className="empty-state"><span className="empty-state-kicker">Loading</span><strong>Refreshing deal intelligence…</strong></div>;
   }
 
   if (!items.length) {
-    return <div className="empty-state">No listings match this queue.</div>;
+    return <div className="empty-state"><span className="empty-state-kicker">Queue clear</span><strong>No listings match this view.</strong><p>Try another queue or broaden the filters.</p></div>;
   }
 
   return (
     <section className="deal-list">
       {items.map((item) => {
         const expanded = expandedIds.has(item.item_id);
+        const reviewReason = primaryReviewReason(item);
         return (
-        <article key={item.item_id} className={cardClass(item)}>
-          <div className="deal-media">
-            {item.image_url ? (
-              <img src={item.image_url} alt="" loading="lazy" />
-            ) : (
-              <div className="image-placeholder">No image</div>
-            )}
-          </div>
+          <article key={item.item_id} className={`${cardClass(item)}${expanded ? " deal-card-expanded" : ""}`}>
+            <div className="deal-media">
+              {item.image_url ? (
+                <img src={item.image_url} alt="" loading="lazy" />
+              ) : (
+                <div className="image-placeholder">No image</div>
+              )}
+              <span className="media-model">{item.model && item.model !== "unknown" ? item.model.replace("iPhone ", "") : "?"}</span>
+            </div>
 
-          <div className="deal-body">
-            <div className="deal-title-row">
-              <div>
-                <h3>{item.title}</h3>
-                <div className="subline">
-                  <span>{modelStorageText(item)}</span>
-                  <span>{sellerText(item)}</span>
+            <div className="deal-body">
+              <div className="deal-title-row">
+                <div className="deal-title-copy">
+                  <h3>{item.title}</h3>
+                  <div className="subline">
+                    <span>{modelStorageText(item)}</span>
+                    <span>{sellerText(item)}</span>
+                  </div>
+                </div>
+                <div className="score-block" title="Notifierr score">
+                  <span>Score</span>
+                  <strong>{formatNumber(item.score)}</strong>
                 </div>
               </div>
-              <div className="score-block">
-                <span>Score</span>
-                <strong>{formatNumber(item.score)}</strong>
+
+              <div className="badge-row badge-row-primary">
+                {item.alert_tier ? <Badge tone={tierTone(item.alert_tier)}>{item.alert_tier}</Badge> : null}
+                <Badge tone={displayStatusTone(item)}>{displayStatusText(item)}</Badge>
+                <AvailabilityBadges item={item} />
+                <Badge tone={item.stale ? "neutral" : "info"}>{item.item_age_label || "Age unknown"}</Badge>
+                <PricingBadge item={item} />
+                {item.manual_review_needed ? <Badge tone="warning">Manual review</Badge> : null}
+                {item.item_type === "component" ? <Badge tone="danger">Component</Badge> : null}
+                {item.feedback_label ? <Badge tone={item.feedback_label === "GOOD" ? "success" : item.feedback_label === "BAD" ? "danger" : "warning"}>{item.feedback_label}</Badge> : null}
               </div>
+
+              <div className="metric-grid">
+                <Metric label="Landed cost" value={landedCostText(item)} />
+                <Metric label="Repair" value={compactPartsText(item)} />
+                <Metric label="Resale" value={compactResaleText(item)} />
+                <Metric label="Expected profit" value={compactProfitText(item)} important={item.estimated_profit_available} />
+                <Metric label="Floor" value={floorProfitText(item)} />
+                {item.actual_net_profit !== null && item.actual_net_profit !== undefined ? <Metric label="Actual net" value={currency(item.actual_net_profit)} important /> : null}
+              </div>
+
+              {reviewReason ? (
+                <div className="deal-review-reason">
+                  <span>Decision note</span>
+                  <strong>{reviewReason}</strong>
+                </div>
+              ) : null}
+
+              {expanded ? (
+                <>
+                  <div className="expanded-signal-row" aria-label="Detailed listing signals">
+                    <StorageBadges item={item} />
+                    <ContextBadges item={item} />
+                    <ReviewBadges item={item} />
+                    {isPreviouslyAlerted(item) ? <Badge tone="neutral">Previously alerted</Badge> : null}
+                    {item.stale ? <Badge tone="neutral">Stale archived</Badge> : null}
+                    <Badge tone={userTone(item.user_status)}>{item.user_status || "new"}</Badge>
+                    {item.outcome_status ? <Badge tone="info">{item.outcome_status}</Badge> : null}
+                  </div>
+                  <ExpandedDetails
+                    item={item}
+                    isAdmin={isAdmin}
+                    onUpdatePartCost={onUpdatePartCost}
+                    onUpdateGlobalPartCost={onUpdateGlobalPartCost}
+                    onSaveCorrection={onSaveCorrection}
+                    onClearCorrection={onClearCorrection}
+                    onOutcome={onOutcome}
+                  />
+                  <div className="deal-secondary-actions">
+                    <div className="secondary-action-buttons">
+                      <button type="button" onClick={() => onIgnore(item)}>Ignore item</button>
+                      <button type="button" onClick={() => onIgnoreSeller(item)} disabled={!item.seller_username}>Ignore seller</button>
+                      <button type="button" onClick={() => onPromote(item)}>Promote / manual alert</button>
+                      <button type="button" className="danger-button" onClick={() => onReject(item)}>Reject</button>
+                      <button type="button" onClick={() => onNote(item)}>Add note</button>
+                    </div>
+                    <div className="feedback-group">
+                      <span>Your assessment</span>
+                      <div className="quick-feedback" aria-label="Your assessment">
+                        {['GOOD', 'BAD', 'UNSURE'].map((label) => (
+                          <button key={label} type="button" aria-pressed={item.feedback_label === label} onClick={() => onLabel(item, label)}>{label}</button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="feedback-group feedback-group-wide">
+                      <span>Why this result is wrong</span>
+                      <div className="quick-feedback" aria-label="Deal feedback">
+                        <button type="button" onClick={() => onFeedback(item, "good_deal")}>Good deal</button>
+                        <button type="button" onClick={() => onFeedback(item, "not_profitable")}>Not profitable</button>
+                        <button type="button" onClick={() => onFeedback(item, "wrong_model")}>Wrong model</button>
+                        <button type="button" onClick={() => onFeedback(item, "wrong_storage")}>Wrong storage</button>
+                        <button type="button" onClick={() => onFeedback(item, "wrong_damage")}>Wrong damage</button>
+                        <button type="button" onClick={() => onFeedback(item, "accessory_not_phone")}>Accessory / part</button>
+                        <button type="button" onClick={() => onFeedback(item, "too_risky")}>Too risky</button>
+                        <button type="button" onClick={() => onFeedback(item, "already_sold")}>Already sold</button>
+                        <button type="button" onClick={() => onFeedback(item, "pricing_wrong")}>Pricing wrong</button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : null}
+
+              {item.user_note ? <p className={hasNegativeUserNote(item) ? "user-note user-note-warning" : "user-note"}>Note: {item.user_note}</p> : null}
+              {item.ignored_reason ? <p className="ignored-note">Ignored: {item.ignored_reason}</p> : null}
             </div>
 
-            <div className="badge-row">
-              {item.alert_tier ? <Badge tone={tierTone(item.alert_tier)}>{item.alert_tier}</Badge> : null}
-              <Badge tone={displayStatusTone(item)}>{displayStatusText(item)}</Badge>
-              <AvailabilityBadges item={item} />
-              {isPreviouslyAlerted(item) ? <Badge tone="neutral">Previously alerted</Badge> : null}
-              <Badge tone={item.stale ? "neutral" : "info"}>{item.item_age_label || "Age unknown"}</Badge>
-              <Badge tone="neutral">{item.detail_check_age_label || "Detail check unknown"}</Badge>
-              {item.stale ? <Badge tone="neutral">Stale archived</Badge> : null}
-              <Badge tone={userTone(item.user_status)}>{item.user_status || "new"}</Badge>
-              <StorageBadges item={item} />
-              <PricingBadge item={item} />
-              <ContextBadges item={item} />
-              <ReviewBadges item={item} />
-              {item.item_type ? <Badge tone={item.item_type === "component" ? "danger" : "neutral"}>{item.item_type.replace("_", " ")}</Badge> : null}
-              {item.feedback_label ? <Badge tone={item.feedback_label === "GOOD" ? "success" : "warning"}>{item.feedback_label}</Badge> : null}
-              {item.outcome_status ? <Badge tone="info">{item.outcome_status}</Badge> : null}
+            <div className="deal-actions">
+              {item.item_url ? (
+                <a className="action-link action-ebay" href={item.item_url} target="_blank" rel="noreferrer">
+                  Open eBay <span aria-hidden="true">↗</span>
+                </a>
+              ) : null}
+              <button type="button" className="action-watch" onClick={() => onWatch(item)}>Watch</button>
+              <button type="button" className="action-review" onClick={() => onReview(item)}>Reviewed</button>
+              <button type="button" className="action-details" onClick={() => toggleExpanded(item.item_id)} aria-expanded={expanded}>
+                {expanded ? "Hide details" : "Details"}
+              </button>
             </div>
-
-            <div className="metric-grid">
-              <Metric label="Price + shipping" value={`${currency(item.price)} + ${currency(item.shipping)} = ${currency(item.total_cost)}`} />
-              <Metric label="Estimated parts" value={partsText(item)} />
-              <Metric label={resaleMetricLabel(item)} value={resaleText(item)} />
-              <Metric label="Estimated profit" value={profitText(item)} important={item.estimated_profit_available} />
-              <Metric label="Floor profit" value={floorProfitText(item)} />
-              {item.actual_net_profit !== null && item.actual_net_profit !== undefined ? <Metric label="Actual net profit" value={currency(item.actual_net_profit)} important /> : null}
-            </div>
-
-            <div className="detail-grid">
-              <Detail label="Description status" text={descriptionPreviewText(item)} />
-              <Detail label="Context labels" values={contextLabelFlags(item)} />
-              <Detail label="Risk phrases found" values={riskPhraseFlags(item)} danger />
-              <Detail label="Proof signals found" values={item.positive_flags} />
-              <Detail label="Key review reason" text={primaryReviewReason(item)} />
-            </div>
-
-            {expanded ? (
-              <ExpandedDetails
-                item={item}
-                isAdmin={isAdmin}
-                onUpdatePartCost={onUpdatePartCost}
-                onUpdateGlobalPartCost={onUpdateGlobalPartCost}
-                onSaveCorrection={onSaveCorrection}
-                onClearCorrection={onClearCorrection}
-                onOutcome={onOutcome}
-              />
-            ) : null}
-
-            {item.user_note ? <p className={hasNegativeUserNote(item) ? "user-note user-note-warning" : "user-note"}>Note: {item.user_note}</p> : null}
-            {item.ignored_reason ? <p className="ignored-note">Ignored: {item.ignored_reason}</p> : null}
-          </div>
-
-          <div className="deal-actions">
-            {item.item_url ? (
-              <a className="action-link" href={item.item_url} target="_blank" rel="noreferrer">
-                Open eBay
-              </a>
-            ) : null}
-            <button type="button" onClick={() => onWatch(item)}>Watch</button>
-            <button type="button" onClick={() => onReview(item)}>Mark reviewed</button>
-            <button type="button" onClick={() => onIgnore(item)}>Ignore item</button>
-            <button type="button" onClick={() => onIgnoreSeller(item)} disabled={!item.seller_username}>Ignore seller</button>
-            <button type="button" onClick={() => onPromote(item)}>Promote/manual alert</button>
-            <button type="button" onClick={() => onReject(item)}>Reject</button>
-            <button type="button" onClick={() => onNote(item)}>Add note</button>
-            <div className="quick-feedback" aria-label="Your assessment">
-              {['GOOD', 'BAD', 'UNSURE'].map((label) => (
-                <button key={label} type="button" aria-pressed={item.feedback_label === label} onClick={() => onLabel(item, label)}>{label}</button>
-              ))}
-            </div>
-            <div className="quick-feedback" aria-label="Deal feedback">
-              <button type="button" onClick={() => onFeedback(item, "good_deal")}>Good deal</button>
-              <button type="button" onClick={() => onFeedback(item, "not_profitable")}>Not profitable</button>
-              <button type="button" onClick={() => onFeedback(item, "wrong_model")}>Wrong model</button>
-              <button type="button" onClick={() => onFeedback(item, "wrong_storage")}>Wrong storage</button>
-              <button type="button" onClick={() => onFeedback(item, "wrong_damage")}>Wrong damage</button>
-              <button type="button" onClick={() => onFeedback(item, "accessory_not_phone")}>Accessory/not a phone</button>
-              <button type="button" onClick={() => onFeedback(item, "too_risky")}>Too risky</button>
-              <button type="button" onClick={() => onFeedback(item, "already_sold")}>Already sold</button>
-              <button type="button" onClick={() => onFeedback(item, "pricing_wrong")}>Pricing wrong</button>
-            </div>
-            <button type="button" onClick={() => toggleExpanded(item.item_id)}>
-              {expanded ? "Hide details" : "View details"}
-            </button>
-          </div>
-        </article>
+          </article>
         );
       })}
     </section>
@@ -166,6 +181,29 @@ export default function ItemTable({
       return next;
     });
   }
+}
+
+function landedCostText(item) {
+  const total = Number(item.total_cost ?? 0);
+  if (Number.isFinite(total) && total > 0) return currency(total);
+  return `${currency(item.price)} + ${currency(item.shipping)}`;
+}
+
+function compactPartsText(item) {
+  if (item.estimated_parts_cost_available === false) return "Unknown";
+  return currency(item.estimated_parts_cost);
+}
+
+function compactResaleText(item) {
+  return Number(item.resale_mid || item.resale_value || 0) > 0
+    ? currency(item.resale_mid || item.resale_value)
+    : "Unknown";
+}
+
+function compactProfitText(item) {
+  if (item.estimated_profit_available === false) return "Unavailable";
+  const value = currency(item.profit_mid || item.estimated_profit);
+  return item.parts_pricing_label === "Parts estimate not verified" ? `~${value}` : value;
 }
 
 function tierTone(tier) {
