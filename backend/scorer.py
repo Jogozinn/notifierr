@@ -25,7 +25,6 @@ HARD_REJECT_PATTERNS = {
     "major_frame_damage": r"\bmajor\s+frame\s+damage\b|\bframe\s+(?:is\s+)?(?:badly\s+)?damaged\b",
     "no_power": r"\bno\s+power\b|\bdoes\s+not\s+power\s+on\b|\bdoesn'?t\s+power\s+on\b|\bwon'?t\s+power\s+on\b|\bnot\s+powering\s+on\b",
     "does_not_turn_on": r"\bdoes\s+not\s+turn\s+on\b|\bdoesn'?t\s+turn\s+on\b|\bwon'?t\s+turn\s+on\b",
-    "face_id_not_working": r"\bface\s*id\s+(?:not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b",
 }
 
 NOT_PHONE_PATTERNS = {
@@ -49,11 +48,14 @@ NOT_PHONE_PATTERNS = {
 
 POSITIVE_PATTERNS = {
     "cracked_screen": r"\bcracked\s+screen\b|\bscreen\s+(?:is\s+)?cracked\b",
-    "screen_display_issue": r"\b(?:screen\s+lines|vertical\s+lines|black\s+spot|bad\s+lcd|damaged\s+lcd|lcd\s+screen(?:\s+damaged)?|screen\s+has\s+lines|display\s+lines)\b",
+    "screen_display_issue": r"\b(?:bad\s+screen|screen\s+bad|screen\s+lines|vertical\s+lines|black\s+spot|no\s+image|no\s+display|black\s+screen|bad\s+lcd|damaged\s+lcd|lcd\s+screen(?:\s+damaged)?|screen\s+has\s+lines|display\s+lines)\b",
     "bad_battery": r"\bbad\s+battery\b|\bswollen\s+battery\b|\bbattery\s+(?:service|needs\s+replacement|issue)\b|\bbattery\s+needs\s+to\s+be\s+serviced\b",
     "back_glass_cracked": r"\bback\s+glass\s+cracked\b|\bcracked\s+back\s+glass\b|\bcracked\s+back\b",
     "camera_lens_cracked": r"\bcamera\s+lens\s+cracked\b|\bcracked\s+camera\s+lens\b",
-    "charging_port_issue": r"\bcharging\s+port\s+(?:issue|problem|bad|broken)\b|\bdoes\s+not\s+charge\b",
+    "charging_port_issue": r"\b(?:charging|charge)(?:\s+port)?\s+(?:issue|problem|bad|broken|fault)\b|\b(?:does\s+not|doesn'?t|won'?t)\s+charge\b",
+    "camera_fault": r"\b(?:front|rear|main|selfie)?\s*camera\s+(?:issue|problem|bad|broken|fault|not\s+working|doesn'?t\s+work)\b",
+    "face_id_issue": r"\bface\s*id\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b",
+    "digitizer_issue": r"\b(?:touch|digitizer)\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|unresponsive)\b",
     "bad_oled": r"\bbad\s+oled\b",
     "powers_on": r"\bpowers?\s+on\b|\bturns?\s+on\b|\bboots?\b|\bphone\s+works\b|\bdoes\s+still\s+work\b",
     "unlocked": r"\bfactory\s+unlocked\b|\bcarrier\s+unlocked\b|\bunlocked\b",
@@ -96,6 +98,9 @@ ISSUE_COST_KEYS = {
     "back_glass_cracked": ("parts.back_glass", "back_glass_cost"),
     "camera_lens_cracked": ("parts.camera_lens", "camera_lens_cost"),
     "charging_port_issue": ("parts.charging_port", "charging_port_cost"),
+    "camera_fault": ("parts.camera", "parts.rear_camera", "camera_cost"),
+    "face_id_issue": ("parts.face_id", "face_id_cost"),
+    "digitizer_issue": ("parts.screen_safe", "parts.screen_budget", "screen_cost"),
 }
 
 VERIFIED_PART_STATUSES = {"verified_screenshot", "verified_screenshot_and_page"}
@@ -123,6 +128,9 @@ ACTUAL_REPAIR_ISSUE_FLAGS = {
     "back_glass_cracked",
     "camera_lens_cracked",
     "charging_port_issue",
+    "camera_fault",
+    "face_id_issue",
+    "digitizer_issue",
 }
 
 OLD_MODEL_IGNORED_FLAG = "old_model_ignored"
@@ -169,7 +177,8 @@ HIGH_CONFIDENCE_SCREEN_COMPONENT_PATTERN = re.compile(
     r"replacement\s+(?:screen|display)|digitizer\s+assembly|front\s+glass\s+assembly|"
     r"oem\s+(?:screen|display)|original\s+(?:screen|display)|"
     r"(?:screen|display)\s+for\s+iphone|compatible\s+with\s+iphone|"
-    r"parts\s+only\s+screen|screen\s+replacement\s+part|good\s+(?:oled|lcd)\s+touch\s+works"
+    r"parts\s+only\s+screen|screen\s+replacement\s+part|good\s+(?:oled|lcd)\s+touch\s+works|"
+    r"(?:oled\s+)?lcd\s+screen|(?:oled|lcd|display|screen)\s+(?:works|tested\s+working)"
     r")\b",
     re.IGNORECASE,
 )
@@ -200,14 +209,17 @@ OLD_MODEL_PATTERN = re.compile(r"\biphone\s*(?:3g|3gs|4s?|5c|5s|5|6s?|7|8)(?:\s+
 IPHONE_13_64GB_PATTERN = re.compile(r"\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b.*\b64\s*gb\b|\b64\s*gb\b.*\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b", re.IGNORECASE)
 IPHONE_13_5_5IN_PATTERN = re.compile(r"\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b.*\b5\.5\s*(?:in|inch|inches)\b|\b5\.5\s*(?:in|inch|inches)\b.*\biphone\s*13(?:\s+(?:mini|pro|max)){0,3}\b", re.IGNORECASE)
 KNOWN_MODEL_ALIASES = (
+    "iPhone 17 Air",
     "iPhone 17 Pro Max",
     "iPhone 17 Pro",
     "iPhone 17",
     "iPhone 16 Pro Max",
     "iPhone 16 Pro",
+    "iPhone 16 Plus",
     "iPhone 16",
     "iPhone 15 Pro Max",
     "iPhone 15 Pro",
+    "iPhone 15 Plus",
     "iPhone 15",
     "iPhone 14 Pro Max",
     "iPhone 14 Pro",
@@ -275,6 +287,8 @@ class ScoreResult:
     manual_review_allowed: bool = False
     whole_phone_confidence_passed: bool = False
     whole_phone_score: float = 0.0
+    item_type: str = "ambiguous"
+    item_type_reason: str = ""
     has_repair_issue: bool = False
     manual_review_needed: bool = False
     manual_review_reason: str = ""
@@ -325,6 +339,8 @@ class ScoreResult:
             "manual_review_allowed": self.manual_review_allowed,
             "whole_phone_confidence_passed": self.whole_phone_confidence_passed,
             "whole_phone_score": self.whole_phone_score,
+            "item_type": self.item_type,
+            "item_type_reason": self.item_type_reason,
             "has_repair_issue": self.has_repair_issue,
             "manual_review_needed": self.manual_review_needed,
             "manual_review_reason": self.manual_review_reason,
@@ -378,13 +394,14 @@ def score_listing(
 
     model = (
         str(forced_model or "").strip()
-        or ("unknown" if classification["suppress_flags"] else detect_model(text, repair_values))
+        or ("unknown" if classification["suppress_flags"] else detect_model_from_listing(listing, repair_values))
     )
     suspicious_spec_flags = _suspicious_spec_flags(text, model)
     if suspicious_spec_flags:
         classification["flags"] = _dedupe([*classification["flags"], *suspicious_spec_flags])
     if _is_old_ignored_model(text, model):
         hard_flags = _dedupe([*hard_flags, OLD_MODEL_IGNORED_FLAG])
+    estimate_source_model = _model_estimate_source(model, repair_values)
     estimate = _model_estimate(model, repair_values)
     storage = detect_storage(listing, forced_storage_capacity=forced_storage_capacity)
     total_cost = float(listing.get("total_cost") or 0)
@@ -394,16 +411,33 @@ def score_listing(
         forced_issue_type=forced_issue_type,
         forced_part_cost=forced_part_cost,
     )
+    fallback_parts_sources: list[str] = []
+    if not parts_cost_available and classification["has_specific_repair_issue"]:
+        fallback_parts_cost, fallback_parts_sources = _estimate_parts_cost_from_nearest_models(
+            model,
+            repair_values,
+            positive_flags,
+            forced_issue_type=forced_issue_type,
+        )
+        if fallback_parts_cost > 0:
+            estimated_parts_cost = fallback_parts_cost
+            parts_cost_available = True
     resale = _resale_estimate(
         estimate,
         storage["storage_capacity"],
         model=model,
+        pricing_model=estimate_source_model,
         resale_research=resale_research,
     )
     resale_value = resale["mid"]
     resale_value_available = resale_value > 0
-    model_has_pricing = model in repair_values
+    model_has_pricing = estimate_source_model is not None
     if model == "unknown" or not model_has_pricing:
+        resale_value_available = False
+        resale = _empty_resale_estimate()
+        resale_value = 0.0
+    if classification["item_type"] != "whole_phone":
+        # A component or an unresolved item cannot inherit complete-handset resale.
         resale_value_available = False
         resale = _empty_resale_estimate()
         resale_value = 0.0
@@ -433,6 +467,18 @@ def score_listing(
     estimated_profit = profit_mid
     parts_pricing_status = str(estimate.get("parts_pricing_status") or "fallback")
     parts_pricing_note = str(estimate.get("parts_pricing_note") or "")
+    if estimate_source_model and estimate_source_model != model:
+        parts_pricing_status = "estimated"
+        parts_pricing_note = _join_note(
+            parts_pricing_note,
+            f"Exact {model} pricing unavailable; estimated from {estimate_source_model}.",
+        )
+    if fallback_parts_sources:
+        parts_pricing_status = "estimated"
+        parts_pricing_note = _join_note(
+            parts_pricing_note,
+            "Missing repair price estimated conservatively from " + ", ".join(fallback_parts_sources) + ".",
+        )
     parts_pricing_label, pricing_warning = _pricing_label_and_warning(
         parts_pricing_status,
         parts_cost_available=parts_cost_available,
@@ -584,6 +630,8 @@ def score_listing(
         manual_review_allowed=manual_review_allowed,
         whole_phone_confidence_passed=classification["whole_phone_confidence_passed"],
         whole_phone_score=classification["whole_phone_score"],
+        item_type=classification["item_type"],
+        item_type_reason=classification["item_type_reason"],
         has_repair_issue=classification["has_repair_issue"],
         manual_review_needed=bool(manual_review_reasons),
         manual_review_reason="; ".join(manual_review_reasons),
@@ -606,11 +654,22 @@ def classify_whole_phone_listing(
     condition = _normalize(str(listing.get("condition") or ""))
     category = _listing_category_text(listing)
     description_signals = description_signals or extract_description_signals(listing)
+    handset_context = bool(
+        (STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title))
+        and (CLEAR_HANDSET_DAMAGE_PATTERN.search(title)
+             or "back_glass_cracked" in positive_flags
+             or description_signals.get("included_device_signals"))
+    )
+    component_from_description = (
+        [] if handset_context and description_signals.get("included_device_signals")
+        else _description_component_suppress_flags(title, description, description_signals)
+    )
     suppress_flags = _dedupe(
         [
             *_match_flags(title, NOT_PHONE_PATTERNS),
-            *_screen_part_suppress_flags(title),
-            *_description_component_suppress_flags(title, description, description_signals),
+            *([] if handset_context else _screen_part_suppress_flags(title)),
+            *([] if handset_context else _structural_component_suppress_flags(title)),
+            *component_from_description,
         ]
     )
     flags: list[str] = list(suppress_flags)
@@ -653,12 +712,15 @@ def classify_whole_phone_listing(
             "risk_flags": [],
             "whole_phone_score": score,
             "whole_phone_confidence_passed": False,
+            "item_type": "component",
+            "item_type_reason": suppress_flags[0],
             "has_repair_issue": has_specific_issue or has_generic_issue,
             "has_specific_repair_issue": has_specific_issue,
         }
 
     risk_flags = []
-    whole_phone_confidence_passed = score >= 4.0 and bool(IPHONE_TITLE_PATTERN.search(title))
+    handset_evidence = _clear_handset_evidence(title, positive_flags, description_signals)
+    whole_phone_confidence_passed = score >= 4.0 and bool(IPHONE_TITLE_PATTERN.search(title)) and handset_evidence
     if not whole_phone_confidence_passed:
         risk_flags.append("not_whole_phone")
         flags.append("not_whole_phone")
@@ -672,6 +734,8 @@ def classify_whole_phone_listing(
         "risk_flags": risk_flags,
         "whole_phone_score": score,
         "whole_phone_confidence_passed": whole_phone_confidence_passed,
+        "item_type": "whole_phone" if handset_evidence else "ambiguous",
+        "item_type_reason": "handset_evidence" if handset_evidence else "insufficient_whole_phone_evidence",
         "has_repair_issue": has_specific_issue or has_generic_issue,
         "has_specific_repair_issue": has_specific_issue,
     }
@@ -687,6 +751,41 @@ def detect_model(text: str, repair_values: dict[str, Any]) -> str:
         if re.search(pattern, normalized):
             return model
     return "unknown"
+
+
+def detect_model_from_listing(listing: dict[str, Any], repair_values: dict[str, Any]) -> str:
+    """Prefer listing-owned fields so seller templates cannot contaminate model detection."""
+    title_model = detect_model(str(listing.get("title") or ""), repair_values)
+    if title_model != "unknown":
+        return title_model
+
+    structured_text = " ".join(_collect_modelish_values(listing.get("raw_json") or {}))
+    for key in ("aspects", "localizedAspects", "itemSpecifics"):
+        structured_text = f"{structured_text} {' '.join(_collect_modelish_values(listing.get(key) or {}))}"
+    structured_model = detect_model(structured_text, repair_values)
+    if structured_model != "unknown":
+        return structured_model
+
+    description = str(listing.get("raw_description") or "")
+    candidates = _detected_models(description, repair_values)
+    return candidates[0] if len(candidates) == 1 else "unknown"
+
+
+def _detected_models(text: str, repair_values: dict[str, Any]) -> list[str]:
+    normalized = _normalize(text)
+    candidates = _dedupe([key for key in repair_values if key != "default"] + list(KNOWN_MODEL_ALIASES))
+    candidates.sort(key=len, reverse=True)
+    matches: list[str] = []
+    occupied_spans: list[tuple[int, int]] = []
+    for model in candidates:
+        for match in re.finditer(_model_pattern(model), normalized):
+            start, end = match.span()
+            if any(start >= occupied_start and end <= occupied_end for occupied_start, occupied_end in occupied_spans):
+                continue
+            matches.append(model)
+            occupied_spans.append((start, end))
+            break
+    return matches
 
 
 def detect_storage(listing: dict[str, Any], *, forced_storage_capacity: str | None = None) -> dict[str, str | None]:
@@ -861,6 +960,12 @@ def _positive_flags_from_description_signals(signals: dict[str, list[str]]) -> l
         flags.append("bad_oled")
     if repair.intersection({"charging_port_issue"}):
         flags.append("charging_port_issue")
+    if repair.intersection({"camera_fault"}):
+        flags.append("camera_fault")
+    if repair.intersection({"face_id_issue"}):
+        flags.append("face_id_issue")
+    if repair.intersection({"digitizer_issue"}):
+        flags.append("digitizer_issue")
     if functionality.intersection({"powers_on", "boots", "phone_works", "fully_functional", "tested_functional", "everything_else_functional"}):
         flags.append("powers_on")
     if functionality.intersection({"face_id_works"}):
@@ -930,11 +1035,14 @@ def _repair_detail_signals(text: str) -> list[str]:
         "bad_battery": r"\bbad\s+battery\b",
         "weak_battery": r"\bweak\s+battery\b",
         "service_battery": r"\bbattery\s+needs\s+to\s+be\s+serviced\b|\bservice\s+battery\b",
-        "bad_lcd": r"\bbad\s+lcd\b|\blcd\s+is\s+bad\b",
+        "bad_lcd": r"\bbad\s+(?:screen|lcd)\b|\b(?:screen|lcd)\s+is\s+bad\b|\bno\s+(?:image|display)\b|\bblack\s+screen\b",
         "bad_oled": r"\bbad\s+oled\b|\boled\s+is\s+bad\b",
         "non_oem_screen": r"\bnon[-\s]?oem\s+screen\b|\bnon\s+apple\s+screen\b",
         "deep_scratches": r"\bdeep\s+scratches\b|\bscratches\s+are\s+semi\s+deep\b",
-        "charging_port_issue": r"\bcharging\s+port\s+(?:issue|problem|bad|broken)\b|\bdoes\s+not\s+charge\b",
+        "charging_port_issue": r"\b(?:charging|charge)(?:\s+port)?\s+(?:issue|problem|bad|broken|fault)\b|\b(?:does\s+not|doesn'?t|won'?t)\s+charge\b",
+        "camera_fault": r"\b(?:front|rear|main|selfie)?\s*camera\s+(?:issue|problem|bad|broken|fault|not\s+working|doesn'?t\s+work)\b",
+        "face_id_issue": r"\bface\s*id\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b",
+        "digitizer_issue": r"\b(?:touch|digitizer)\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|unresponsive)\b",
         "swollen_battery": r"\bswollen\s+battery\b",
         "no_ic_read": r"\bno\s+ic\s+read\b",
         "ic_issue": r"\bic\s+(?:issue|problem|bad)\b|\bbad\s+ic\b",
@@ -1043,16 +1151,17 @@ def _suspicious_spec_flags(text: str, model: str) -> list[str]:
 
 def _screen_part_suppress_flags(title: str) -> list[str]:
     high_confidence_component = bool(HIGH_CONFIDENCE_SCREEN_COMPONENT_PATTERN.search(title))
+    if (high_confidence_component and CLEAR_HANDSET_DAMAGE_PATTERN.search(title)
+            and (STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title))
+            and not re.search(r"\b(?:oem|replacement|assembly|digitizer|screen\s+for\s+iphone)\b", title, re.I)):
+        return []
     if not high_confidence_component and not PARTS_ONLY_PATTERN.search(title) and not SCREEN_PART_LISTING_PATTERN.search(title):
         return []
     if not DISPLAY_PART_PATTERN.search(title):
         return []
-    if STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title):
+    if not high_confidence_component and (STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title)):
         return []
-    if high_confidence_component:
-        if WHOLE_PHONE_PROOF_PATTERN.search(title):
-            return []
-    elif FULL_DEVICE_PATTERN.search(title):
+    if not high_confidence_component and WHOLE_PHONE_PROOF_PATTERN.search(title):
         return []
 
     flags = ["screen_part_not_phone"]
@@ -1065,6 +1174,68 @@ def _screen_part_suppress_flags(title: str) -> list[str]:
     if re.search(r"\b(?:cracked\s+glass|screen\s+glass|glass\s+assembly)\b", title, re.IGNORECASE):
         flags.append("glass_only_not_phone")
     return flags
+
+
+STRUCTURAL_COMPONENT_PATTERN = re.compile(
+    r"\b(?:logic\s+board|motherboard|camera\s+module|replacement\s+battery|"
+    r"battery\s+replacement\s+part|charging[\s-]*(?:port\s+)?flex|camera\s+lens\s+assembly|"
+    r"(?:back|rear)\s+housing|chassis|frame\s+assembly)\b",
+    re.IGNORECASE,
+)
+OEM_COMPONENT_PATTERN = re.compile(
+    r"\b(?:oem|genuine|original|replacement|compatible)\b.{0,35}\b"
+    r"(?:screen|display|oled|lcd|digitizer|housing|chassis|logic\s+board|"
+    r"motherboard|camera|battery|charging[\s-]*port|flex|lens)\b",
+    re.IGNORECASE,
+)
+CLEAR_HANDSET_DAMAGE_PATTERN = re.compile(
+    r"\b(?:(?:cracked|broken|damaged|bad|faulty)\s+(?:front\s+|back\s+)?"
+    r"(?:screen|display|oled|lcd|back\s+glass|battery|camera|face\s*id)|"
+    r"(?:screen|display|oled|lcd|battery|face\s*id)\s+(?:is\s+)?"
+    r"(?:cracked|broken|damaged|bad|faulty)|"
+    r"needs?\s+(?:a\s+)?(?:new|replacement)\s+(?:battery|screen|display)|"
+    r"battery\s+needs?\s+(?:a\s+)?replacement|"
+    r"cracked\s+back\s+glass)\b",
+    re.IGNORECASE,
+)
+
+
+def _structural_component_suppress_flags(title: str) -> list[str]:
+    match = STRUCTURAL_COMPONENT_PATTERN.search(title)
+    if not match and not CLEAR_HANDSET_DAMAGE_PATTERN.search(title):
+        match = OEM_COMPONENT_PATTERN.search(title)
+    if not match:
+        return []
+    phrase = match.group(0).lower()
+    if "housing" in phrase or "chassis" in phrase or "frame" in phrase:
+        return ["housing_not_phone"]
+    if "board" in phrase:
+        return ["motherboard"]
+    if "battery" in phrase:
+        return ["battery_part_not_phone"]
+    return ["replacement_part_not_phone"]
+
+
+def _clear_handset_evidence(
+    title: str, positive_flags: list[str], description_signals: dict[str, list[str]],
+) -> bool:
+    explicit_description_proof = [
+        signal for signal in description_signals.get("whole_phone_evidence", [])
+        if signal != "iphone_title_or_specs"
+    ]
+    if description_signals.get("included_device_signals") or explicit_description_proof:
+        return True
+    if re.search(r"\b(?:complete|whole|entire)\s+(?:iphone|phone|handset)\b|\b(?:phone|handset)\s+(?:is\s+)?(?:included|works|powers?\s+on)\b", title, re.I):
+        return True
+    if CLEAR_HANDSET_DAMAGE_PATTERN.search(title):
+        return True
+    if re.search(r"\biphone\b.*\bas[\s-]?is\b.*\bread\s+description\b", title, re.I):
+        return True
+    if (PARTS_ONLY_PATTERN.search(title) and STORAGE_PATTERN.search(title)
+            and CARRIER_PATTERN.search(title) and re.search(r"\bread\s+description\b", title, re.I)):
+        return True
+    specific = ACTUAL_REPAIR_ISSUE_FLAGS.intersection(positive_flags)
+    return bool(specific and (STORAGE_PATTERN.search(title) or CARRIER_PATTERN.search(title)))
 
 
 def _description_component_suppress_flags(title: str, description: str, description_signals: dict[str, list[str]] | None = None) -> list[str]:
@@ -1150,20 +1321,23 @@ def _has_structured_model_confirmation(listing: dict[str, Any]) -> bool:
 
 def _collect_modelish_values(value: Any, parent_key: str = "") -> list[str]:
     values: list[str] = []
-    model_key = bool(re.search(r"\b(?:model|product|phone)\b", parent_key, re.IGNORECASE))
+    model_key = bool(re.search(r"(?:^|[_\s])(?:model|modelname|modelnumber|product)(?:$|[_\s])", parent_key, re.IGNORECASE))
     if isinstance(value, dict):
+        name = str(value.get("name") or "")
+        nested_value = value.get("value")
+        if re.search(r"\bmodel\b", name, re.IGNORECASE) and nested_value is not None:
+            values.append(str(nested_value))
         for key, nested in value.items():
+            if str(key).lower() in {"title", "description", "shortdescription"}:
+                continue
             values.extend(_collect_modelish_values(nested, str(key)))
         return values
     if isinstance(value, list):
         for nested in value:
             values.extend(_collect_modelish_values(nested, parent_key))
         return values
-    if value is None:
-        return values
-    text = str(value)
-    if model_key or IPHONE_TITLE_PATTERN.search(text):
-        values.append(text)
+    if value is not None and model_key:
+        values.append(str(value))
     return values
 
 
@@ -1206,9 +1380,41 @@ def _model_pattern(model: str) -> str:
 
 
 def _model_estimate(model: str, repair_values: dict[str, Any]) -> dict[str, Any]:
-    if model in repair_values:
-        return repair_values[model]
+    source = _model_estimate_source(model, repair_values)
+    if source:
+        return repair_values[source]
     return repair_values.get("default", {})
+
+
+def _model_estimate_source(model: str, repair_values: dict[str, Any]) -> str | None:
+    if model in repair_values:
+        return model
+    generation = _iphone_generation(model)
+    if generation is None:
+        return None
+    variant = _iphone_variant(model)
+    candidates = [key for key in repair_values if key != "default" and _iphone_generation(key) is not None]
+    candidates.sort(
+        key=lambda key: (
+            abs((_iphone_generation(key) or generation) - generation),
+            0 if _iphone_variant(key) == variant else 1,
+            0 if _iphone_variant(key) == "base" else 1,
+        )
+    )
+    return candidates[0] if candidates else None
+
+
+def _iphone_generation(model: str) -> int | None:
+    match = re.search(r"\biphone\s+(\d{2})\b", str(model), re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _iphone_variant(model: str) -> str:
+    lowered = str(model).lower()
+    for variant in ("pro max", "pro", "plus", "mini", "air"):
+        if variant in lowered:
+            return variant
+    return "base"
 
 
 def _resale_estimate(
@@ -1216,9 +1422,14 @@ def _resale_estimate(
     storage_capacity: str | None = None,
     *,
     model: str = "unknown",
+    pricing_model: str | None = None,
     resale_research: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    research_model = pricing_model or model
     research_entry = _model_research_entry(resale_research or {}, model)
+    used_nearest_model = research_model != model
+    if not research_entry and research_model != model:
+        research_entry = _model_research_entry(resale_research or {}, research_model)
     research_storage = research_entry.get("resale_by_storage") if isinstance(research_entry.get("resale_by_storage"), dict) else {}
     storage_warning = ""
     if research_storage and storage_capacity:
@@ -1226,13 +1437,16 @@ def _resale_estimate(
         if storage_used:
             if storage_used != storage_capacity:
                 storage_warning = f"No exact {storage_capacity} resale range; using closest lower {storage_used}"
-            return _resale_range_from_mapping(
+            result = _resale_range_from_mapping(
                 research_storage.get(storage_used) or {},
-                source="storage_specific",
+                source="estimated_nearest_model" if used_nearest_model else "storage_specific",
                 market_source="resale_research",
                 storage_used=storage_used,
                 storage_warning=storage_warning,
             )
+            if used_nearest_model:
+                result["note"] = _join_note(result["note"], f"Estimated from {research_model}; exact {model} resale unavailable.")
+            return result
 
     research_resale = research_entry.get("resale") if isinstance(research_entry.get("resale"), dict) else {}
     if research_resale:
@@ -1240,13 +1454,16 @@ def _resale_estimate(
             storage_warning = "Storage unknown - model-level resale used"
         elif research_storage and storage_capacity:
             storage_warning = f"No storage-specific resale range for {storage_capacity}; model-level resale used"
-        return _resale_range_from_mapping(
+        result = _resale_range_from_mapping(
             research_resale,
-            source="model_range",
+            source="estimated_nearest_model" if used_nearest_model else "model_range",
             market_source="resale_research",
             storage_used=None,
             storage_warning=storage_warning,
         )
+        if used_nearest_model:
+            result["note"] = _join_note(result["note"], f"Estimated from {research_model}; exact {model} resale unavailable.")
+        return result
 
     storage_ranges = estimate.get("resale_by_storage") if isinstance(estimate.get("resale_by_storage"), dict) else {}
     storage_warning = ""
@@ -1255,13 +1472,16 @@ def _resale_estimate(
         if storage_used:
             if storage_used != storage_capacity:
                 storage_warning = f"No exact {storage_capacity} resale range; using closest lower {storage_used}"
-            return _resale_range_from_mapping(
+            result = _resale_range_from_mapping(
                 storage_ranges.get(storage_used) or {},
-                source="storage_specific",
+                source="estimated_nearest_model" if used_nearest_model else "storage_specific",
                 market_source="repair_values",
                 storage_used=storage_used,
                 storage_warning=storage_warning,
             )
+            if used_nearest_model:
+                result["note"] = _join_note(result["note"], f"Estimated from {research_model}; exact {model} resale unavailable.")
+            return result
 
     resale = estimate.get("resale") if isinstance(estimate.get("resale"), dict) else {}
     if storage_ranges and not storage_capacity and resale:
@@ -1280,6 +1500,8 @@ def _resale_estimate(
         high = mid
     if mid <= 0:
         source = "missing"
+    elif used_nearest_model:
+        source = "estimated_nearest_model"
     elif resale:
         source = "model_range"
     else:
@@ -1290,9 +1512,12 @@ def _resale_estimate(
         "high": high,
         "confidence": str(resale.get("confidence") or ""),
         "sample_size": int(resale.get("sample_size") or 0),
-        "note": str(resale.get("note") or ""),
+        "note": _join_note(
+            str(resale.get("note") or ""),
+            f"Estimated from {research_model}; exact {model} resale unavailable." if used_nearest_model and mid > 0 else "",
+        ),
         "source": source,
-        "market_source": "repair_values" if source == "model_range" else "legacy_resale_value" if source == "legacy_resale_value" else "missing",
+        "market_source": "repair_values" if source in {"model_range", "estimated_nearest_model"} else "legacy_resale_value" if source == "legacy_resale_value" else "missing",
         "condition_used": "Good" if source != "missing" else "",
         "mint": _empty_range(),
         "storage_used": None,
@@ -1479,6 +1704,55 @@ def _estimate_parts_cost(
         return 0.0, True
     fallback = float(fallback)
     return fallback, fallback > 0
+
+
+def _estimate_parts_cost_from_nearest_models(
+    model: str,
+    repair_values: dict[str, Any],
+    positive_flags: list[str],
+    *,
+    forced_issue_type: str | None = None,
+) -> tuple[float, list[str]]:
+    """Use conservative nearby-model repair prices and disclose every source."""
+    generation = _iphone_generation(model)
+    if generation is None:
+        return 0.0, []
+    forced_flag = _issue_flag_from_override(forced_issue_type)
+    active_flags = [forced_flag] if forced_flag else list(positive_flags)
+    total = 0.0
+    sources: list[str] = []
+    for flag, cost_keys in ISSUE_COST_KEYS.items():
+        if flag not in active_flags:
+            continue
+        candidates: list[tuple[int, int, float, str]] = []
+        for candidate_model, candidate_estimate in repair_values.items():
+            candidate_generation = _iphone_generation(candidate_model)
+            if candidate_generation is None or abs(candidate_generation - generation) > 2:
+                continue
+            cost = _estimate_cost(candidate_estimate, cost_keys)
+            if cost is None or cost <= 0:
+                continue
+            candidates.append(
+                (
+                    abs(candidate_generation - generation),
+                    0 if _iphone_variant(candidate_model) == _iphone_variant(model) else 1,
+                    float(cost),
+                    candidate_model,
+                )
+            )
+        if not candidates:
+            return 0.0, []
+        candidates.sort(key=lambda value: (value[0], value[1], -value[2]))
+        nearest_distance = candidates[0][0]
+        nearest = [candidate for candidate in candidates if candidate[0] == nearest_distance][:3]
+        conservative = max(candidate[2] for candidate in nearest)
+        total += conservative
+        sources.append(f"{nearest[0][3]} {flag}")
+    return round(total, 2), sources
+
+
+def _join_note(existing: str, addition: str) -> str:
+    return " ".join(part.strip() for part in (existing, addition) if part and part.strip())
 
 
 def _issue_flag_from_override(value: str | None) -> str | None:

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from backend.config import load_resale_research, load_scoring_rules
 from backend.ebay_client import clean_description
+from backend.alerting import evaluate_alert_decision
 from backend.main import _build_decision_trace, should_notify_item
 from backend.scorer import detect_model, detect_storage, extract_description_signals, score_listing
 from backend.storage import Storage
@@ -853,10 +854,9 @@ def test_baseband_or_no_service_is_hard_rejected():
     assert "no_service" in result.hard_reject_flags
 
 
-def test_frame_face_id_and_no_power_samples_are_hard_rejected():
+def test_frame_and_no_power_samples_are_hard_rejected_while_face_id_is_repairable():
     samples = {
         "bent_frame": "bent_frame",
-        "face_id_not_working": "face_id_not_working",
         "no_power": "no_power",
     }
 
@@ -864,6 +864,11 @@ def test_frame_face_id_and_no_power_samples_are_hard_rejected():
         result = score_sample(sample_name)
         assert result.status == "rejected"
         assert flag in result.hard_reject_flags
+
+    face_id = score_sample("face_id_not_working")
+    assert face_id.status != "rejected"
+    assert "face_id_not_working" not in face_id.hard_reject_flags
+    assert "face_id_issue" in face_id.positive_flags
 
 
 def test_cracked_screen_powers_on_can_become_candidate():
@@ -986,7 +991,9 @@ def test_duplicate_items_do_not_notify_twice():
     storage = Storage(Path(":memory:"))
 
     storage.upsert_item(item)
-    assert should_notify_item(item, result, _settings())
+    decision = evaluate_alert_decision(item, result, _settings())
+    assert decision.eligible is True
+    assert decision.tier == "PROFITABLE"
     assert not storage.was_alerted(item["item_id"])
 
     storage.mark_alerted(item["item_id"])
@@ -1949,7 +1956,7 @@ def test_storage_unknown_verified_low_price_routes_to_review_trace_not_dead_end_
     trace = _build_decision_trace(item, result, _settings(), scan_cycle_id=123)
 
     assert result.alert_eligible is False
-    assert trace["verdict"]["normalized_bucket"] == "good"
+    assert trace["verdict"]["normalized_bucket"] == "review"
     assert trace["detected"]["carrier_status"] == "unknown"
     assert "storage_unknown" in trace["reasons"]["missing_data"]
     assert "carrier_unknown" in trace["reasons"]["missing_data"]
@@ -2258,6 +2265,7 @@ def test_too_cheap_parts_only_listing_without_proof_does_not_alert():
     assert "iphone_13_64gb_mismatch" in result.listing_classification_flags
     assert "iphone_13_5_5in_mismatch" in result.listing_classification_flags
     assert not should_notify_item(item, result, _settings())
+    assert evaluate_alert_decision(item, result, _settings()).tier == "REVIEW"
 
 
 def test_too_cheap_parts_only_listing_with_proof_can_still_be_eligible():

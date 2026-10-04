@@ -1,15 +1,19 @@
 import asyncio
 import logging
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from backend import main
 from backend.auth import hash_password
 from backend.config import Settings
-from backend.storage import Storage
+from backend.storage import Storage, _has_reviewable_description_evidence, _is_priority_review_item
 
 
 class _TestAsyncLock:
@@ -327,6 +331,28 @@ def test_shared_search_plan_dedupes_identical_keywords_and_creates_shared_rows(m
     assert state_count == 3
 
 
+def test_overlapping_searches_attribute_first_discovery_once(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch, tmp_path, auth_required=True, ebay_client_id="id",
+        ebay_client_secret="secret", search_keywords=["alpha", "beta"],
+    )
+    user = _create_user(storage, settings, "overlap@example.com", "overlap-pass")
+    _install_shared_scan_fakes(monkeypatch, [_listing("overlap-1")])
+
+    asyncio.run(main.scan_shared_once(limit=10, notify=False, triggered_by_user=None, background_mode=False))
+
+    with storage.connect() as connection:
+        results = connection.execute(
+            "SELECT s.keyword, r.newly_discovered, r.scored FROM shared_scan_results r "
+            "JOIN shared_scan_searches s ON s.id=r.scan_search_id ORDER BY s.id"
+        ).fetchall()
+    item = storage.get_user_item(int(user["id"]), "overlap-1")
+    assert len(results) == 2
+    assert sum(row["newly_discovered"] for row in results) == 1
+    assert all(row["scored"] for row in results)
+    assert item["first_seen_at"] and item["first_scored_at"]
+
+
 def test_shared_scan_user_specific_thresholds_create_different_state_outcomes(monkeypatch, tmp_path):
     storage, settings = _configure_app(
         monkeypatch,
@@ -465,6 +491,12 @@ def test_user_alert_dedupe_remains_per_user_under_shared_scan(monkeypatch, tmp_p
     assert first["alerts_sent"] == 2
     assert second["alerts_sent"] == 0
     assert captured["sent_urls"] == ["https://discord.example/a", "https://discord.example/b"]
+    for user in (user_a, user_b):
+        attempts = storage.list_notification_attempts(user_id=int(user["id"]))
+        assert len(attempts) == 2
+        assert attempts[0]["deduplicated"] is True
+        assert attempts[0]["skipped"] is True
+        assert attempts[0]["failure_category"] == "already_alerted"
 
 
 def test_auth_not_required_still_uses_local_bridge_scan(monkeypatch, tmp_path):
@@ -606,10 +638,7 @@ def test_background_poll_loop_does_not_start_twice_in_one_process(monkeypatch, t
     asyncio.run(run_test())
 
 
-def test_background_poll_loop_skips_fresh_external_worker_heartbeat(monkeypatch, tmp_path, caplog):
-    async def fake_background_poll():
-        raise AssertionError("background poll should not start")
-
+def test_background_poll_uses_transactional_lease_instead_of_heartbeat(monkeypatch, tmp_path):
     storage, _settings = _configure_app(
         monkeypatch,
         tmp_path,
@@ -617,29 +646,96 @@ def test_background_poll_loop_skips_fresh_external_worker_heartbeat(monkeypatch,
         background_poll_enabled=True,
         background_poll_seconds=900,
     )
-    storage.update_worker_heartbeat(
-        worker_name="background_poll",
-        process_id=main._process_id() + 1000,
-        hostname="other-host",
-        started_at=datetime.now(timezone.utc).isoformat(),
-        status="sleeping",
-        next_wake_at=(datetime.now(timezone.utc) + timedelta(seconds=900)).isoformat(),
+    now = datetime.now(timezone.utc)
+    assert storage.acquire_worker_lease(
+        "background_poll", "other-worker", hostname="other-host", process_id=999,
+        now=now.isoformat(), expires_at=(now + timedelta(seconds=900)).isoformat(),
     )
-    monkeypatch.setattr(main, "_background_poll", fake_background_poll)
-    monkeypatch.setattr(main, "_background_poll_task", None)
-    main.polling_status.reset()
+    assert not storage.acquire_worker_lease(
+        "background_poll", main.WORKER_ID, hostname=main._hostname(), process_id=main._process_id(),
+        now=now.isoformat(), expires_at=(now + timedelta(seconds=900)).isoformat(),
+    )
 
-    caplog.set_level(logging.WARNING)
-    task = main._start_background_poll_loop()
 
-    assert task is None
-    status = main.polling_status.snapshot()
-    assert status["process_poll_task_started"] is False
-    assert status["duplicate_start_prevented"] is True
-    assert "another worker heartbeat is fresh" in caplog.text
+def test_offloaded_background_scan_keeps_health_and_status_responsive(monkeypatch, tmp_path):
+    storage, settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=600,
+    )
+    user = main._local_settings_user()
+    resolved = main._resolve_effective_user_settings(user)
+    started = threading.Event()
+    release = threading.Event()
+
+    async def fake_unlocked(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        release.wait(timeout=5)
+        return {
+            "mode": "local",
+            "scanned": 1,
+            "new_items_found": 1,
+            "fresh_items_found": 1,
+            "stale_items_seen": 0,
+            "best_finds": 0,
+            "priority_review": 0,
+            "candidates": 0,
+            "rejected": 0,
+            "alerts_sent": 0,
+            "alerted": 0,
+            "duplicates_skipped": 0,
+            "keywords": ["iphone"],
+        }
+
+    async def run_test():
+        monkeypatch.setattr(main, "_scan_once_unlocked", fake_unlocked)
+        first = asyncio.create_task(
+            main.scan_once(
+                ["iphone"],
+                1,
+                notify=False,
+                resolved_settings=resolved,
+                cycle_mode="local_background",
+                offload_scan_work=True,
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 1)
+        before = time.perf_counter()
+        health = main.health()
+        status = main.admin_polling_status({})
+        elapsed = time.perf_counter() - before
+        second = await main.scan_once(
+            ["iphone"],
+            1,
+            notify=False,
+            resolved_settings=resolved,
+            cycle_mode="local_background",
+            offload_scan_work=True,
+        )
+        release.set()
+        first_result = await first
+        return health, status, elapsed, second, first_result
+
+    health, status, elapsed, second, first_result = asyncio.run(run_test())
+
+    assert elapsed < 0.5
+    assert health["api_responsive"] is True
+    assert status["api_responsive"] is True
+    assert status["global_scan_lease_state"] == "owned"
+    assert second["reason"] == "scan_already_running"
+    assert first_result["scanned"] == 1
+    cycles = storage.list_scan_cycles(limit=10)
+    completed = [cycle for cycle in cycles if cycle["status"] == "completed"]
+    skipped = [cycle for cycle in cycles if cycle["status"] == "skipped"]
+    assert len(completed) == 1
+    assert len(skipped) == 1
 
 
 def test_background_poll_scan_failure_does_not_stop_future_cycles(monkeypatch, caplog):
+    monkeypatch.setattr(main, "storage", Storage(Path(":memory:")))
     calls = {"scan": 0, "sleep": 0}
     resolved = SimpleNamespace(
         background_poll_enabled=True,
@@ -684,12 +780,12 @@ def test_background_poll_scan_failure_does_not_stop_future_cycles(monkeypatch, c
     assert status["cycles_succeeded"] == 1
     assert status["cycles_failed"] == 1
     assert status["last_alerts_sent"] == 2
-    assert "RuntimeError: temporary scan failure" in status["last_error"]
+    assert status["last_error"] == ""
     assert "Background poll cycle failed" in caplog.text
     assert "Background scan summary alerts_sent=2" in caplog.text
 
 
-def test_background_poll_local_interval_uses_config_over_local_setting(monkeypatch, tmp_path, caplog):
+def test_background_poll_local_interval_uses_persisted_setting(monkeypatch, tmp_path, caplog):
     _storage, _settings = _configure_app(
         monkeypatch,
         tmp_path,
@@ -710,7 +806,7 @@ def test_background_poll_local_interval_uses_config_over_local_setting(monkeypat
 
     async def fake_sleep(seconds):
         calls["sleep"] += 1
-        assert seconds == 900
+        assert seconds == 300
         raise asyncio.CancelledError()
 
     async def run_test():
@@ -730,10 +826,10 @@ def test_background_poll_local_interval_uses_config_over_local_setting(monkeypat
     status = main.polling_status.snapshot()
     assert calls["sleep"] == 1
     assert status["background_poll_config_seconds"] == 900
-    assert status["background_poll_user_seconds"] == 60
-    assert status["background_poll_interval_source"] == "config_local"
-    assert status["last_sleep_seconds"] == 900
-    assert "next_poll_seconds=900 config_poll_seconds=900 user_poll_seconds=60" in caplog.text
+    assert status["background_poll_user_seconds"] == 300
+    assert status["background_poll_interval_source"] == "persisted_user_min"
+    assert status["last_sleep_seconds"] == 300
+    assert "next_poll_seconds=300 config_poll_seconds=900 user_poll_seconds=300" in caplog.text
 
 
 def test_background_poll_clamps_unsafe_poll_interval(monkeypatch, tmp_path, caplog):
@@ -757,7 +853,7 @@ def test_background_poll_clamps_unsafe_poll_interval(monkeypatch, tmp_path, capl
 
     async def fake_sleep(seconds):
         calls["sleep"] += 1
-        assert seconds == 900
+        assert seconds == 300
         raise asyncio.CancelledError()
 
     async def run_test():
@@ -775,8 +871,7 @@ def test_background_poll_clamps_unsafe_poll_interval(monkeypatch, tmp_path, capl
     asyncio.run(run_test())
 
     assert calls["sleep"] == 1
-    assert main.polling_status.snapshot()["last_sleep_seconds"] == 900
-    assert "Background poll interval below safe minimum; clamping" in caplog.text
+    assert main.polling_status.snapshot()["last_sleep_seconds"] == 300
 
 
 def test_background_poll_rate_limit_uses_long_backoff(monkeypatch, caplog):
@@ -908,7 +1003,7 @@ def test_scan_cycle_persists_on_successful_manual_scan(monkeypatch, tmp_path):
     assert cycles[0]["status"] == "completed"
     assert cycles[0]["items_found"] == 1
     assert cycles[0]["items_scored"] == 1
-    assert cycles[0]["final_bucket_counts"]["gem"] == 1
+    assert cycles[0]["final_bucket_counts"]["profitable"] == 1
 
 
 def test_decision_trace_is_stored_for_scored_listing(monkeypatch, tmp_path):
@@ -934,8 +1029,8 @@ def test_decision_trace_is_stored_for_scored_listing(monkeypatch, tmp_path):
     assert trace["pricing"]["resale_mid"] == 520.0
     assert trace["verdict"]["app_status"] == "candidate"
     assert trace["verdict"]["current_app_bucket"] == "candidate"
-    assert trace["verdict"]["bucket"] == "gem"
-    assert trace["verdict"]["normalized_bucket"] == "gem"
+    assert trace["verdict"]["bucket"] == "profitable"
+    assert trace["verdict"]["normalized_bucket"] == "profitable"
 
 
 def test_decision_trace_export_flattens_verdict_fields_from_json(monkeypatch, tmp_path):
@@ -1005,7 +1100,7 @@ def test_trace_replay_does_not_call_ebay_or_send_alerts_and_writes_traces(monkey
     monkeypatch.setattr(main, "EbayClient", fail_ebay)
     monkeypatch.setattr(main, "DiscordNotifier", fail_notifier)
 
-    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, write_traces=True, dry_run=False), admin_user=user)
 
     assert result["replayed"] == 1
     cycle = storage.get_scan_cycle(result["scan_cycle_id"])
@@ -1020,7 +1115,9 @@ def test_trace_replay_does_not_call_ebay_or_send_alerts_and_writes_traces(monkey
     assert trace["listing_id"] == "replay-trace"
     assert trace["verdict"]["current_app_status"] == "risky"
     assert trace["verdict"]["current_app_bucket"] == "risky"
-    assert trace["verdict"]["normalized_bucket"] in {"gem", "good", "needs_data", "watch", "bad", "avoid"}
+    assert trace["verdict"]["normalized_bucket"] in {
+        "gem", "profitable", "review", "good", "needs_data", "watch", "bad", "avoid"
+    }
 
 
 def test_trace_replay_rescore_from_raw_does_not_call_ebay_send_alerts_or_mutate_status(monkeypatch, tmp_path):
@@ -1053,7 +1150,7 @@ def test_trace_replay_rescore_from_raw_does_not_call_ebay_send_alerts_or_mutate_
     monkeypatch.setattr(main, "DiscordNotifier", fail_notifier)
     monkeypatch.setattr(main, "score_listing", score_from_raw)
 
-    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True))
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True, write_traces=True, dry_run=False), admin_user=user)
 
     assert result["replayed"] == 1
     assert result["rescore_from_raw"] is True
@@ -1109,7 +1206,10 @@ def test_trace_replay_rescore_can_target_source_cycle_and_item_ids(monkeypatch, 
             item_ids=["source-b", "source-c"],
             rescore_from_raw=True,
             limit=10,
-        )
+            write_traces=True,
+            dry_run=False,
+        ),
+        admin_user=user,
     )
 
     traces = storage.list_decision_traces_for_cycle(result["scan_cycle_id"])
@@ -1141,9 +1241,9 @@ def test_trace_replay_rescore_dry_run_does_not_write_traces(monkeypatch, tmp_pat
     assert result["replayed"] == 1
     assert result["traces_written"] == 0
     assert result["dry_run_traces"][0]["listing_id"] == "dry-run-rescore"
-    assert storage.list_decision_traces_for_cycle(result["scan_cycle_id"]) == []
-    cycle = storage.get_scan_cycle(result["scan_cycle_id"])
-    assert cycle["items_scored"] == 1
+    assert result["scan_cycle_id"] is None
+    assert result["cycle"]["status"] == "dry_run"
+    assert storage.list_scan_cycles(limit=20) == []
 
 
 def test_trace_replay_rescore_export_includes_comparison_and_change_counters(monkeypatch, tmp_path):
@@ -1161,7 +1261,7 @@ def test_trace_replay_rescore_export_includes_comparison_and_change_counters(mon
     )
     monkeypatch.setattr(main, "score_listing", lambda listing, repair_values, **kwargs: FakeScoreResult(status="candidate", alert_eligible=True))
 
-    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True))
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True, write_traces=True, dry_run=False), admin_user=user)
     export = main.build_trace_audit_export(result["scan_cycle_id"])
 
     assert export["total_rescored_items"] == 1
@@ -1206,7 +1306,7 @@ def test_trace_replay_rescore_rejects_display_part_from_raw_description(monkeypa
         },
     )
 
-    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True))
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, rescore_from_raw=True, write_traces=True, dry_run=False), admin_user=user)
     trace = storage.list_decision_traces_for_cycle(result["scan_cycle_id"])[0]["trace"]
 
     assert trace["verdict"]["current_app_status"] == "candidate"
@@ -1242,7 +1342,7 @@ def test_trace_replay_export_returns_reason_counters_and_needs_data_samples(monk
 
     _install_shared_scan_fakes(monkeypatch, [], score_factory=blocked_score)
 
-    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, write_traces=True, dry_run=False), admin_user=user)
     export = main.build_trace_audit_export(result["scan_cycle_id"])
 
     assert export["total_traces"] == 1
@@ -1318,8 +1418,9 @@ def test_trace_replay_handles_empty_db_gracefully(monkeypatch, tmp_path):
         ebay_client_secret="secret",
     )
     _install_shared_scan_fakes(monkeypatch, [])
+    user = main._local_settings_user()
 
-    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, write_traces=True, dry_run=False), admin_user=user)
     export = main.build_trace_audit_export(result["scan_cycle_id"])
 
     assert result["replayed"] == 0
@@ -1329,6 +1430,129 @@ def test_trace_replay_handles_empty_db_gracefully(monkeypatch, tmp_path):
     assert cycle["items_scored"] == 0
     assert export["total_traces"] == 0
     assert export["samples"]["needs_data"] == []
+
+
+@pytest.mark.parametrize("settings_case", ["complete", "missing_defaults", "plaintext_webhook"])
+@pytest.mark.parametrize("has_item", [False, True])
+@pytest.mark.parametrize("request_kwargs", [{}, {"write_traces": True, "dry_run": True}])
+def test_default_trace_replay_never_calls_storage_mutations(monkeypatch, tmp_path, settings_case, has_item, request_kwargs):
+    storage, _settings = _configure_app(
+        monkeypatch, tmp_path, auth_required=False,
+        app_encryption_key="6xOPMctX4pJ4BoU5m6v6-55ZACFMy39YrOU8IZQ5lbY=",
+    )
+    user = main._local_settings_user()
+    user_id = int(user["id"])
+    if has_item:
+        storage.upsert_user_item(
+            user_id, {**_listing("read-only-replay"), **FakeScoreResult(status="risky", alert_eligible=False).as_item_fields()},
+        )
+    with storage.connect() as connection:
+        if settings_case == "missing_defaults":
+            connection.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+            connection.execute("DELETE FROM user_notification_settings WHERE user_id = ?", (user_id,))
+        elif settings_case == "plaintext_webhook":
+            connection.execute(
+                "UPDATE user_notification_settings SET discord_webhook = ? WHERE user_id = ?",
+                ("https://discord.example/plaintext-secret", user_id),
+            )
+
+    def forbid_write(*args, **kwargs):
+        raise AssertionError("read-only replay called a storage mutation")
+
+    prefixes = ("create_", "ensure_", "update_", "upsert_", "record_", "finish_", "set_", "delete_", "acquire_", "release_", "takeover_", "recover_", "mark_")
+    for name in dir(storage):
+        if name.startswith(prefixes) and callable(getattr(storage, name)):
+            monkeypatch.setattr(storage, name, forbid_write)
+
+    result = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, **request_kwargs))
+
+    assert result["replayed"] == int(has_item)
+    assert result["scan_cycle_id"] is None
+    assert result["traces_written"] == 0
+
+
+def test_trace_replay_explicit_write_requires_authenticated_admin(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(monkeypatch, tmp_path, auth_required=False)
+    user = main._local_settings_user()
+    with pytest.raises(HTTPException) as exc:
+        main.replay_listing_decision_traces(main.TraceReplayRequest(write_traces=True, dry_run=False))
+    assert exc.value.status_code == 403
+    assert storage.list_scan_cycles(limit=10) == []
+
+
+def test_dashboard_queue_filters_and_sorts_before_pagination(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(monkeypatch, tmp_path, auth_required=False)
+    user = main._local_settings_user()
+    now = datetime.now(timezone.utc)
+    for index in range(60):
+        item = _listing(f"newer-{index}")
+        item["title"] = f"newer-{index} iPhone 14"
+        item["item_origin_at"] = (now - timedelta(minutes=index)).isoformat()
+        item["found_at"] = item["item_origin_at"]
+        storage.upsert_user_item(int(user["id"]), item)
+    for rank, item_id in enumerate(("older-gem", "older-profitable", "older-review"), start=1):
+        old = _listing(item_id)
+        old["total_cost"] = rank
+        old["item_origin_at"] = (now - timedelta(minutes=60 + rank)).isoformat()
+        old["found_at"] = old["item_origin_at"]
+        storage.upsert_user_item(int(user["id"]), old)
+    storage.upsert_user_item(int(user["id"]), {
+        **_listing("ignored-older"), "user_status": "ignored",
+        "item_origin_at": (now - timedelta(minutes=64)).isoformat(),
+    })
+    monkeypatch.setattr(main, "_cached_pricing_context_for_user", lambda user_id: None)
+    monkeypatch.setattr(main, "_decorate_item_for_user", lambda item, **kwargs: item)
+    monkeypatch.setattr(main, "_decorate_alert_decision", lambda item, resolved: {
+        **item, "alert_tier": {"older-gem": "GEM", "older-profitable": "PROFITABLE"}.get(item["item_id"], "REVIEW"),
+        "alert_decision": {"blocking_reasons": []},
+    })
+
+    def page(queue, sort="newest", search="", limit=50, offset=0):
+        return main.dashboard_items(
+            queue=queue, sort=sort, search=search, limit=limit, offset=offset,
+            include_ignored=False, include_stale=False, user=user,
+        )
+
+    gem = page("high_quality")
+    assert [item["item_id"] for item in gem["items"]] == ["older-gem"]
+    assert gem["total"] == gem["counts"]["high_quality"] == 1
+    assert gem["counts"]["ignored"] == 1
+    monkeypatch.setattr(main, "_should_start_background_poll_loop", lambda: False)
+    with TestClient(main.app) as client:
+        response = client.get("/items/dashboard", params={"queue": "high_quality", "limit": 50})
+    assert response.status_code == 200
+    assert [item["item_id"] for item in response.json()["items"]] == ["older-gem"]
+    profitable = page("profitable")
+    assert [item["item_id"] for item in profitable["items"]] == ["older-profitable"]
+    assert profitable["counts"]["profitable"] == 1
+    review = page("review", limit=10, offset=60)
+    assert review["total"] == review["counts"]["review"] == 61
+    assert [item["item_id"] for item in review["items"]] == ["older-review"]
+    assert page("review", search="newer-59")["total"] == 1
+    price_first = page("all", sort="price", limit=1)
+    assert price_first["total"] == 63
+    assert price_first["items"][0]["item_id"] == "older-gem"
+
+
+def test_persisted_whole_phone_score_supports_description_review(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(monkeypatch, tmp_path, auth_required=False)
+    user = main._local_settings_user()
+    storage.upsert_user_item(int(user["id"]), {
+        **_listing("description-review"),
+        "status": "risky", "user_status": "new", "model": "iPhone 14", "storage_capacity": "128GB",
+        "whole_phone_confidence_passed": True, "whole_phone_score": 7,
+        "has_repair_issue": True, "estimated_parts_cost_available": False,
+        "estimated_profit_available": False, "resale_value": 400, "resale_mid": 400,
+        "raw_description": "The phone powers on; screen needs repair.",
+        "listing_classification_flags": ["description_functionality_evidence"],
+        "positive_flags": ["cracked_screen"],
+    })
+    persisted = storage.list_user_items(int(user["id"]))[0]
+    assert persisted["whole_phone_score"] == 7
+    assert _has_reviewable_description_evidence(persisted) is True
+    assert main._has_reviewable_description_evidence(persisted) is True
+    assert _is_priority_review_item(persisted) is True
+    assert main._is_priority_review_candidate(persisted) is True
 
 
 def test_alert_block_and_missing_data_reasons_appear_in_trace(monkeypatch, tmp_path):
@@ -1726,11 +1950,15 @@ def test_admin_trace_replay_and_export_endpoints_return_data(monkeypatch, tmp_pa
 
     with TestClient(main.app) as client:
         replay_response = client.post("/admin/scan/trace-replay", json={"limit": 10})
-        cycle_id = replay_response.json()["scan_cycle_id"]
+        rejected_write = client.post("/admin/scan/trace-replay", json={"limit": 10, "write_traces": True, "dry_run": False})
+        written = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, write_traces=True, dry_run=False), admin_user=user)
+        cycle_id = written["scan_cycle_id"]
         export_response = client.get(f"/admin/scan/cycles/{cycle_id}/trace-export")
 
     assert replay_response.status_code == 200
     assert replay_response.json()["replayed"] == 1
+    assert replay_response.json()["scan_cycle_id"] is None
+    assert rejected_write.status_code == 403
     assert export_response.status_code == 200
     export = export_response.json()
     assert export["scan_cycle_id"] == cycle_id
@@ -1755,7 +1983,7 @@ def test_fresh_scan_audit_export_ignores_trace_replay_cycles(monkeypatch, tmp_pa
 
     asyncio.run(main.scan_once(["shared keyword"], 10, notify=False, resolved_settings=resolved))
     fresh_cycle = storage.list_scan_cycles()[0]
-    replay = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10))
+    replay = main.replay_listing_decision_traces(main.TraceReplayRequest(limit=10, write_traces=True, dry_run=False), admin_user=user)
 
     export = main.build_latest_fresh_scan_audit_export()
 
@@ -1807,9 +2035,14 @@ def test_shared_scan_notification_failure_is_logged_and_does_not_mark_alerted(mo
         )
     )
 
-    assert summary["best_finds"] == 1
+    assert summary["profitable"] == 1
     assert summary["alerts_sent"] == 0
     assert storage.was_alerted_for_user(int(user["id"]), "notify-fail") is False
+    attempt = storage.list_notification_attempts(user_id=int(user["id"]))[0]
+    assert attempt["attempted"] is True
+    assert attempt["sent"] is False
+    assert attempt["failed"] is True
+    assert attempt["failure_category"] == "provider_exception"
     assert main.polling_status.snapshot()["last_notifications_failed"] == 1
     assert "Alert notification send failed" in caplog.text
 
@@ -1862,6 +2095,121 @@ def test_polling_status_endpoint_returns_expected_keys_in_local_mode(monkeypatch
     assert payload["process_poll_task_started"] is False
 
 
+def test_polling_health_reports_blocked_orphan_and_durable_skip_counts(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=600,
+    )
+    now = datetime.now(timezone.utc)
+    successful = storage.create_scan_cycle(
+        mode="local_background", hostname="host", process_id=1, worker_id="host-1-worker",
+        background_poll_enabled=True, background_poll_seconds=600,
+    )
+    storage.finish_scan_cycle(successful, status="completed", items_scored=1)
+    with storage.connect() as connection:
+        connection.execute(
+            "UPDATE scan_cycles SET started_at = ?, finished_at = ? WHERE id = ?",
+            ((now - timedelta(hours=3, minutes=2)).isoformat(), (now - timedelta(hours=3)).isoformat(), successful),
+        )
+    for _ in range(2):
+        cycle_id = storage.create_scan_cycle(
+            mode="local_background", hostname="host", process_id=2, worker_id=main.WORKER_ID,
+            background_poll_enabled=True, background_poll_seconds=600,
+        )
+        storage.finish_scan_cycle(cycle_id, status="skipped", skip_reason="scan_already_running")
+    storage.update_worker_heartbeat(
+        worker_name="background_poll", process_id=main._process_id(), hostname=main._hostname(),
+        started_at=(now - timedelta(hours=4)).isoformat(), status="sleeping",
+    )
+    assert storage.acquire_worker_lease(
+        main.BACKGROUND_LEASE_NAME, main.WORKER_ID, hostname=main._hostname(), process_id=main._process_id(),
+        now=now.isoformat(), expires_at=(now + timedelta(minutes=21)).isoformat(),
+    )
+    assert storage.acquire_worker_lease(
+        main.GLOBAL_SCAN_LEASE_NAME, "host-15816-oldworker", hostname="host", process_id=15816,
+        now=(now - timedelta(minutes=10)).isoformat(), expires_at=(now + timedelta(hours=5)).isoformat(),
+    )
+    monkeypatch.setattr(
+        main,
+        "inspect_lease_owner",
+        lambda *args, **kwargs: SimpleNamespace(state="absent", reason="confirmed absent"),
+    )
+    monkeypatch.setattr(main, "_background_poll_is_active", lambda current_settings, now=None: True)
+
+    payload = main.admin_polling_status({})
+
+    assert payload["state"] == "blocked"
+    assert payload["orphaned_lease_blocking_work"] is True
+    assert payload["consecutive_skipped_cycles"] == 2
+    assert payload["last_skip_reason"] == "scan_already_running"
+    assert "dead worker PID 15816" in payload["reason"]
+
+
+def test_fresh_scheduler_heartbeat_cannot_mask_overdue_success(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=600,
+    )
+    now = datetime.now(timezone.utc)
+    cycle_id = storage.create_scan_cycle(
+        mode="local_background", background_poll_enabled=True, background_poll_seconds=600,
+    )
+    storage.finish_scan_cycle(cycle_id, status="completed", items_scored=1)
+    with storage.connect() as connection:
+        connection.execute(
+            "UPDATE scan_cycles SET started_at = ?, finished_at = ? WHERE id = ?",
+            ((now - timedelta(hours=3, minutes=2)).isoformat(), (now - timedelta(hours=3)).isoformat(), cycle_id),
+        )
+    storage.update_worker_heartbeat(
+        worker_name="background_poll", process_id=main._process_id(), hostname=main._hostname(),
+        started_at=(now - timedelta(hours=4)).isoformat(), status="sleeping",
+    )
+    assert storage.acquire_worker_lease(
+        main.BACKGROUND_LEASE_NAME, main.WORKER_ID, hostname=main._hostname(), process_id=main._process_id(),
+        now=now.isoformat(), expires_at=(now + timedelta(minutes=21)).isoformat(),
+    )
+    monkeypatch.setattr(main, "_background_poll_is_active", lambda current_settings, now=None: True)
+
+    payload = main.admin_polling_status({})
+
+    assert payload["scheduler_process_state"] == "running"
+    assert payload["state"] == "degraded"
+    assert payload["last_success_age_seconds"] >= 3 * 60 * 60
+    assert "overdue" in payload["reason"]
+
+
+def test_polling_health_distinguishes_outside_active_window(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
+        monkeypatch,
+        tmp_path,
+        auth_required=False,
+        background_poll_enabled=True,
+        background_poll_seconds=600,
+    )
+    now = datetime.now(timezone.utc)
+    storage.update_worker_heartbeat(
+        worker_name="background_poll", process_id=main._process_id(), hostname=main._hostname(),
+        started_at=now.isoformat(), status="sleeping",
+    )
+    assert storage.acquire_worker_lease(
+        main.BACKGROUND_LEASE_NAME, main.WORKER_ID, hostname=main._hostname(), process_id=main._process_id(),
+        now=now.isoformat(), expires_at=(now + timedelta(minutes=21)).isoformat(),
+    )
+    monkeypatch.setattr(main, "_background_poll_is_active", lambda current_settings, now=None: False)
+
+    payload = main.admin_polling_status({})
+
+    assert payload["state"] == "outside_window"
+    assert payload["stale"] is False
+    assert "outside configured active hours" in payload["reason"]
+
+
 def test_admin_notification_test_uses_message_path_without_alert_dedupe_mutation(monkeypatch, tmp_path):
     storage, settings = _configure_app(
         monkeypatch,
@@ -1905,7 +2253,13 @@ def test_admin_notification_test_uses_message_path_without_alert_dedupe_mutation
     assert response.status_code == 200
     assert response.json() == {"attempted": True, "sent": True, "failed": False, "error": ""}
     assert after is False
-    assert sent_messages == [("https://discord.example/admin", "Notifierr test notification")]
+    assert sent_messages == [("https://discord.example/admin", main.TEST_NOTIFICATION_MESSAGE)]
+    attempts = storage.list_notification_attempts(user_id=int(admin["id"]))
+    test_attempt = next(entry for entry in attempts if entry["notification_type"] == "test")
+    assert test_attempt["attempted"] is True
+    assert test_attempt["sent"] is True
+    assert test_attempt["item_id"] is None
+    assert test_attempt["scan_cycle_id"] is None
     assert main.polling_status.snapshot()["last_notifications_sent"] == 1
 
 

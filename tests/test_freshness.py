@@ -193,6 +193,11 @@ def test_scan_summary_counts_fresh_new_stale_and_does_not_resend_alerts(monkeypa
         monkeypatch.setattr(main, "_scan_lock", asyncio.Lock())
         monkeypatch.setattr(main, "settings", Settings(ebay_client_id="id", ebay_client_secret="secret", discord_webhook_url="hook"))
         monkeypatch.setattr(main, "storage", Storage(Path(":memory:")))
+        local_user = main._local_settings_user()
+        main.storage.update_user_notification_settings(
+            int(local_user["id"]),
+            {"discord_enabled": 1, "use_global_discord_webhook": 1},
+        )
         monkeypatch.setattr(main, "resale_research", {})
         monkeypatch.setattr(
             main,

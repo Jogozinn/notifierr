@@ -1,6 +1,12 @@
+import { autoscanStateLabel, formatAutoscanInterval } from "../autoscanStatus.js";
+
 const QUEUE_CARDS = [
-  { key: "high_quality", label: "Best Finds" },
-  { key: "priority_review", label: "Priority Review" },
+  { key: "high_quality", label: "GEM" },
+  { key: "profitable", label: "PROFITABLE" },
+  { key: "review", label: "REVIEW" },
+  { key: "unsent_actionable", label: "Unsent Actionable" },
+  { key: "missed_opportunities", label: "Missed Opportunities" },
+  { key: "priority_review", label: "Legacy Review" },
   { key: "needs_data", label: "Needs Data" },
   { key: "watched", label: "Watched" },
   { key: "promoted", label: "Promoted" },
@@ -9,7 +15,7 @@ const QUEUE_CARDS = [
   { key: "all", label: "All" },
 ];
 
-export default function StatsBar({ stats, counts, activeStatus, onChange }) {
+export default function StatsBar({ stats, pollingStatus, counts, activeStatus, onChange }) {
   return (
     <section className="stats-panel" aria-label="Deal review queues">
       <div className="stats-grid">
@@ -31,10 +37,46 @@ export default function StatsBar({ stats, counts, activeStatus, onChange }) {
         <span>Rejected today: <strong>{stats?.rejected_today ?? "Loading"}</strong></span>
         <span>Stale hidden: <strong>{stats?.stale_items ?? "Loading"}</strong></span>
       </div>
-      <div className="last-scan">Last scan: {formatLastScan(stats)}</div>
+      {stats?.scan_funnel?.cycle_id ? <ScanFunnel funnel={stats.scan_funnel} /> : null}
+      <div className={`autoscan-status autoscan-${pollingStatus?.state || "unknown"}`} aria-live="polite">
+        <strong>Autoscan: {autoscanStateLabel(pollingStatus)}</strong>
+        <span>Background: {formatTime(pollingStatus?.last_background_succeeded_at)}</span>
+        <span>Manual: {formatTime(pollingStatus?.last_manual_succeeded_at)}</span>
+        <span>Next: {formatTime(pollingStatus?.next_scheduled_at)}</span>
+        <span>Every: {formatAutoscanInterval(pollingStatus?.effective_interval_seconds)}</span>
+        {pollingStatus?.reason ? <span className={pollingStatus.state === "running" ? "" : "autoscan-warning"}>{pollingStatus.reason}</span> : null}
+        {!pollingStatus?.reason && pollingStatus?.last_error ? <span className="autoscan-warning">{pollingStatus.last_error}</span> : null}
+        {!pollingStatus?.reason && !pollingStatus?.last_error && pollingStatus?.last_skip_reason ? <span>{pollingStatus.last_skip_reason}</span> : null}
+      </div>
+      <div className="last-scan">Latest listing found: {formatLastScan(stats)}</div>
     </section>
   );
 }
+
+function ScanFunnel({ funnel }) {
+  const steps = [
+    ["Found", funnel.found], ["Unique", funnel.unique], ["Detail fetched", funnel.detail_fetched],
+    ["Scored", funnel.scored], ["Whole phones", funnel.whole_phones],
+    ["Potentially profitable", funnel.potentially_profitable], ["GEM", funnel.gem],
+    ["PROFITABLE", funnel.profitable], ["REVIEW", funnel.review],
+    ["Alert attempted", funnel.alert_attempted], ["Alert sent", funnel.alert_sent],
+  ];
+  return (
+    <div className="scan-funnel" aria-label={`Latest scan funnel cycle ${funnel.cycle_id}`}>
+      {steps.map(([label, value], index) => (
+        <span key={label}>{index ? "→ " : ""}{label}: <strong>{value ?? 0}</strong></span>
+      ))}
+      {funnel.lost_reasons?.length ? (
+        <span className="funnel-losses">Main losses: {funnel.lost_reasons.map(([reason, count]) => `${reason} (${count})`).join(", ")}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function formatTime(value) {
+  return value ? new Date(value).toLocaleString() : "Never";
+}
+
 
 function formatCount(stats, counts, key) {
   if (!stats) {
@@ -48,6 +90,9 @@ function formatCount(stats, counts, key) {
   }
   if (key === "priority_review") {
     return stats.priority_review ?? 0;
+  }
+  if (key === "unsent_actionable") {
+    return stats.unsent_actionable ?? stats.notification_delivery?.never_notified_active_actionable ?? 0;
   }
   if (key === "high_quality") {
     return stats.best_finds ?? ((stats.by_status?.candidate ?? 0) + (stats.by_status?.alerted ?? 0));

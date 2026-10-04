@@ -27,6 +27,9 @@ def _shared_marketplace_columns() -> list[sa.Column]:
         sa.Column("seller_feedback_score", sa.Integer()),
         sa.Column("raw_description", sa.Text()),
         sa.Column("item_origin_at", sa.Text()),
+        sa.Column("marketplace_origin_at", sa.Text()),
+        sa.Column("first_seen_at", sa.Text()),
+        sa.Column("retention_managed", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("found_at", sa.Text(), nullable=False),
         sa.Column("updated_at", sa.Text(), nullable=False),
         sa.Column("raw_json", sa.Text()),
@@ -35,6 +38,12 @@ def _shared_marketplace_columns() -> list[sa.Column]:
         sa.Column("item_end_at", sa.Text()),
         sa.Column("last_availability_checked_at", sa.Text()),
         sa.Column("availability_note", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("detail_fetch_attempted_at", sa.Text()),
+        sa.Column("detail_fetch_status", sa.Text(), nullable=False, server_default=sa.text("'not_requested'")),
+        sa.Column("detail_fetch_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("detail_fetch_recovered_fields", sa.Text(), nullable=False, server_default=sa.text("'[]'")),
+        sa.Column("detail_fetch_failure_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("detail_fetch_retry_after", sa.Text()),
     ]
 
 
@@ -84,6 +93,13 @@ def _user_item_state_columns(*, include_created: bool = True) -> list[sa.Column]
         sa.Column("manual_review_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
         sa.Column("alert_eligible", sa.Integer(), nullable=False, server_default=sa.text("0")),
         sa.Column("listing_classification_flags", sa.Text(), nullable=False, server_default=sa.text("'[]'")),
+        sa.Column("first_scored_at", sa.Text()),
+        sa.Column("item_type", sa.Text()),
+        sa.Column("item_type_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("scorer_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("rules_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("repair_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+        sa.Column("resale_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
         sa.Column("user_status", sa.Text(), nullable=False, server_default=sa.text("'new'")),
         sa.Column("user_note", sa.Text(), nullable=False, server_default=sa.text("''")),
         sa.Column("reviewed_at", sa.Text()),
@@ -178,10 +194,112 @@ user_notification_settings = sa.Table(
     sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     sa.Column("discord_webhook", sa.Text(), nullable=False, server_default=sa.text("''")),
     sa.Column("discord_enabled", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("push_enabled", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("use_global_discord_webhook", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("alerts_enabled", sa.Integer(), nullable=False, server_default=sa.text("1")),
     sa.Column("notify_best_finds", sa.Integer(), nullable=False, server_default=sa.text("1")),
     sa.Column("notify_priority_review", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("send_gem_immediately", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("send_profitable_immediately", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("review_delivery_mode", sa.Text(), nullable=False, server_default=sa.text("'immediate'")),
+    sa.Column("max_review_alerts_per_hour", sa.Integer(), nullable=False, server_default=sa.text("2")),
+    sa.Column("duplicate_suppression_hours", sa.Integer(), nullable=False, server_default=sa.text("72")),
+    sa.Column("meaningful_price_drop_amount", sa.Float(), nullable=False, server_default=sa.text("20")),
+    sa.Column("meaningful_price_drop_percent", sa.Float(), nullable=False, server_default=sa.text("0.05")),
+    sa.Column("meaningful_profit_increase_amount", sa.Float(), nullable=False, server_default=sa.text("25")),
+    sa.Column("meaningful_profit_increase_percent", sa.Float(), nullable=False, server_default=sa.text("0.15")),
+    sa.Column("meaningful_roi_increase", sa.Float(), nullable=False, server_default=sa.text("0.10")),
+    sa.Column("catchup_enabled", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("catchup_batch_size", sa.Integer(), nullable=False, server_default=sa.text("5")),
+    sa.Column("catchup_include_review", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("gem_min_expected_profit", sa.Float(), nullable=False, server_default=sa.text("75")),
+    sa.Column("profitable_min_expected_profit", sa.Float(), nullable=False, server_default=sa.text("50")),
+    sa.Column("review_min_expected_profit", sa.Float(), nullable=False, server_default=sa.text("25")),
+    sa.Column("review_min_upside_profit", sa.Float(), nullable=False, server_default=sa.text("60")),
+    sa.Column("gem_min_roi", sa.Float(), nullable=False, server_default=sa.text("0.25")),
+    sa.Column("profitable_min_roi", sa.Float(), nullable=False, server_default=sa.text("0.15")),
+    sa.Column("review_min_roi", sa.Float(), nullable=False, server_default=sa.text("0.05")),
+    sa.Column("max_listing_age_minutes", sa.Integer(), nullable=False, server_default=sa.text("360")),
     *_timestamp_columns(),
+)
+
+
+push_subscriptions = sa.Table(
+    "push_subscriptions",
+    metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("endpoint_hash", sa.Text(), nullable=False),
+    sa.Column("endpoint", sa.Text(), nullable=False),
+    sa.Column("p256dh", sa.Text(), nullable=False),
+    sa.Column("auth", sa.Text(), nullable=False),
+    sa.Column("device_label", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("user_agent", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("enabled", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("last_seen_at", sa.Text()),
+    sa.Column("last_success_at", sa.Text()),
+    sa.Column("last_failure_at", sa.Text()),
+    sa.Column("invalidated_at", sa.Text()),
+    *_timestamp_columns(),
+    sa.UniqueConstraint("user_id", "endpoint_hash", name="uq_push_subscriptions_user_endpoint"),
+)
+
+
+push_delivery_attempts = sa.Table(
+    "push_delivery_attempts",
+    metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("subscription_id", sa.Integer(), sa.ForeignKey("push_subscriptions.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("item_id", sa.Text()),
+    sa.Column("scan_cycle_id", sa.Integer(), sa.ForeignKey("scan_cycles.id", ondelete="SET NULL")),
+    sa.Column("notification_tier", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("provider_status", sa.Integer()),
+    sa.Column("error_category", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("error_message", sa.Text(), nullable=False, server_default=sa.text("''")),
+    *_timestamp_columns(),
+)
+
+
+notification_attempts = sa.Table(
+    "notification_attempts",
+    metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("item_id", sa.Text()),
+    sa.Column("scan_cycle_id", sa.Integer(), sa.ForeignKey("scan_cycles.id", ondelete="SET NULL")),
+    sa.Column("notification_type", sa.Text(), nullable=False),
+    sa.Column("attempted", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("sent", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("failed", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("deduplicated", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("skipped", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("failure_category", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("error_message", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("destination_source", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("provider_status", sa.Integer()),
+    sa.Column("status", sa.Text(), nullable=False, server_default=sa.text("'legacy_unclassified'")),
+    sa.Column("fingerprint", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("notification_tier", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("effective_price", sa.Float()),
+    sa.Column("expected_profit", sa.Float()),
+    sa.Column("expected_roi", sa.Float()),
+    sa.Column("principal_damage", sa.Text(), nullable=False, server_default=sa.text("'unknown'")),
+    sa.Column("availability_state", sa.Text(), nullable=False, server_default=sa.text("'unknown'")),
+    sa.Column("confidence", sa.Text(), nullable=False, server_default=sa.text("'low'")),
+    sa.Column("destination_identity", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("successful_at", sa.Text()),
+    sa.Column("prior_success_attempt_id", sa.Integer()),
+    sa.Column("fingerprint_match_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("source", sa.Text(), nullable=False, server_default=sa.text("'live_scan'")),
+    sa.Column("next_eligible_at", sa.Text()),
+    sa.Column("retry_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("parent_attempt_id", sa.Integer()),
+    sa.Column("claimed_at", sa.Text()),
+    sa.Column("retention_managed", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("created_at", sa.Text(), nullable=False),
+    sa.Column("updated_at", sa.Text(), nullable=False),
 )
 
 
@@ -295,6 +413,7 @@ user_item_corrections = sa.Table(
     sa.Column("corrected_storage_capacity", sa.Text()),
     sa.Column("corrected_issue_type", sa.Text()),
     sa.Column("corrected_part_cost", sa.Float()),
+    sa.Column("feedback_code", sa.Text(), nullable=False, server_default=sa.text("''")),
     sa.Column("note", sa.Text(), nullable=False, server_default=sa.text("''")),
     *_timestamp_columns(),
     sa.UniqueConstraint("user_id", "marketplace_item_id", name="uq_user_item_corrections_user_item"),
@@ -315,6 +434,7 @@ shared_scan_runs = sa.Table(
     sa.Column("total_users_evaluated", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("total_items_scored", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("total_alerts_sent", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("retention_managed", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("started_at", sa.Text(), nullable=False),
     sa.Column("finished_at", sa.Text()),
     *_timestamp_columns(),
@@ -335,6 +455,20 @@ shared_scan_searches = sa.Table(
     sa.Column("subscribed_user_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("items_returned", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("api_calls_made", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("unique_new_items", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("duplicate_items", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("viable_whole_phones", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("gem_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("profitable_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("review_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("alert_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("detail_fetch_attempts", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("detail_fetch_successes", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("detail_fetch_failures", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("component_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("needs_data_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("reject_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("alert_eligible_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("created_at", sa.Text(), nullable=False),
 )
 
@@ -346,6 +480,15 @@ shared_scan_results = sa.Table(
     sa.Column("scan_search_id", sa.Integer(), sa.ForeignKey("shared_scan_searches.id", ondelete="CASCADE"), nullable=False),
     sa.Column("marketplace", sa.Text(), nullable=False, server_default=sa.text("'ebay'")),
     sa.Column("marketplace_item_id", sa.Text(), nullable=False),
+    sa.Column("newly_discovered", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("detail_status", sa.Text(), nullable=False, server_default=sa.text("'not_requested'")),
+    sa.Column("scored", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("item_type", sa.Text(), nullable=False, server_default=sa.text("'ambiguous'")),
+    sa.Column("tier", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("needs_data", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("rejected", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("alert_eligible", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("notification_status", sa.Text(), nullable=False, server_default=sa.text("''")),
     sa.Column("created_at", sa.Text(), nullable=False),
     sa.UniqueConstraint(
         "scan_search_id",
@@ -374,6 +517,11 @@ scan_cycles = sa.Table(
     sa.Column("retry_after_seconds", sa.Integer()),
     sa.Column("process_id", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("hostname", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("worker_id", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("abandoned_at", sa.Text()),
+    sa.Column("abandoned_by_worker_id", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("abandonment_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("partial_trace_count", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("auth_required", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("background_poll_enabled", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("background_poll_seconds", sa.Integer(), nullable=False, server_default=sa.text("0")),
@@ -417,6 +565,21 @@ worker_heartbeats = sa.Table(
     *_timestamp_columns(),
 )
 
+worker_leases = sa.Table(
+    "worker_leases",
+    metadata,
+    sa.Column("lease_name", sa.Text(), primary_key=True),
+    sa.Column("worker_id", sa.Text(), nullable=False),
+    sa.Column("hostname", sa.Text(), nullable=False),
+    sa.Column("process_id", sa.Integer(), nullable=False),
+    sa.Column("acquired_at", sa.Text(), nullable=False),
+    sa.Column("heartbeat_at", sa.Text(), nullable=False),
+    sa.Column("expires_at", sa.Text(), nullable=False),
+    sa.Column("previous_worker_id", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("takeover_reason", sa.Text(), nullable=False, server_default=sa.text("''")),
+    *_timestamp_columns(),
+)
+
 
 listing_decision_traces = sa.Table(
     "listing_decision_traces",
@@ -426,6 +589,7 @@ listing_decision_traces = sa.Table(
     sa.Column("marketplace_item_id", sa.Integer(), sa.ForeignKey("marketplace_items.id", ondelete="CASCADE"), nullable=False),
     sa.Column("scan_cycle_id", sa.Integer(), sa.ForeignKey("scan_cycles.id", ondelete="CASCADE"), nullable=False),
     sa.Column("trace_json", sa.Text(), nullable=False),
+    sa.Column("retention_managed", sa.Integer(), nullable=False, server_default=sa.text("0")),
     sa.Column("created_at", sa.Text(), nullable=False),
     sa.UniqueConstraint(
         "user_id",
@@ -433,6 +597,96 @@ listing_decision_traces = sa.Table(
         "scan_cycle_id",
         name="uq_listing_decision_traces_user_item_cycle",
     ),
+)
+
+
+user_item_feedback = sa.Table(
+    "user_item_feedback", metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("marketplace_item_id", sa.Integer(), sa.ForeignKey("marketplace_items.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("label", sa.Text(), nullable=False),
+    sa.Column("note", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("scorer_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("rules_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("repair_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("resale_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("estimated_profit", sa.Float()),
+    sa.Column("item_type", sa.Text(), nullable=False, server_default=sa.text("'ambiguous'")),
+    *_timestamp_columns(),
+    sa.UniqueConstraint("user_id", "marketplace_item_id", name="uq_user_item_feedback_user_item"),
+)
+
+
+user_item_outcomes = sa.Table(
+    "user_item_outcomes", metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("marketplace_item_id", sa.Integer(), sa.ForeignKey("marketplace_items.id", ondelete="CASCADE"), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("purchase_price", sa.Float()), sa.Column("purchase_tax", sa.Float()),
+    sa.Column("inbound_shipping", sa.Float()), sa.Column("purchase_date", sa.Text()),
+    sa.Column("actual_repair_type", sa.Text()), sa.Column("parts_cost", sa.Float()),
+    sa.Column("other_repair_cost", sa.Float()), sa.Column("sale_date", sa.Text()),
+    sa.Column("sale_price", sa.Float()), sa.Column("selling_fees", sa.Float()),
+    sa.Column("outbound_shipping", sa.Float()), sa.Column("refund_amount", sa.Float()),
+    sa.Column("other_cost", sa.Float()), sa.Column("actual_net_profit", sa.Float()),
+    sa.Column("note", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("scorer_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("rules_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("repair_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("resale_hash", sa.Text(), nullable=False, server_default=sa.text("''")),
+    sa.Column("estimated_profit", sa.Float()),
+    *_timestamp_columns(),
+    sa.UniqueConstraint("user_id", "marketplace_item_id", name="uq_user_item_outcomes_user_item"),
+)
+
+
+search_daily_rollups = sa.Table(
+    "search_daily_rollups", metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("day", sa.Text(), nullable=False),
+    sa.Column("search_signature", sa.Text(), nullable=False),
+    sa.Column("marketplace", sa.Text(), nullable=False),
+    sa.Column("executions", sa.Integer(), nullable=False),
+    sa.Column("results_returned", sa.Integer(), nullable=False),
+    sa.Column("distinct_listings", sa.Integer(), nullable=False),
+    sa.Column("newly_discovered", sa.Integer(), nullable=False),
+    sa.Column("whole_phone_candidates", sa.Integer(), nullable=False),
+    sa.Column("component_listings", sa.Integer(), nullable=False),
+    sa.Column("gem_count", sa.Integer(), nullable=False),
+    sa.Column("profitable_count", sa.Integer(), nullable=False),
+    sa.Column("review_count", sa.Integer(), nullable=False),
+    sa.Column("needs_data_count", sa.Integer(), nullable=False),
+    sa.Column("reject_count", sa.Integer(), nullable=False),
+    sa.Column("alert_eligible_count", sa.Integer(), nullable=False),
+    sa.Column("alerts_sent", sa.Integer(), nullable=False),
+    sa.Column("detail_fetch_attempts", sa.Integer(), nullable=False),
+    sa.Column("detail_fetch_successes", sa.Integer(), nullable=False),
+    sa.Column("detail_fetch_failures", sa.Integer(), nullable=False),
+    *_timestamp_columns(),
+    sa.UniqueConstraint("day", "search_signature", "marketplace", name="uq_search_daily_rollups_day_signature"),
+)
+
+
+search_rollup_days = sa.Table(
+    "search_rollup_days", metadata,
+    sa.Column("day", sa.Text(), primary_key=True),
+    sa.Column("completed_at", sa.Text(), nullable=False),
+    sa.Column("run_count", sa.Integer(), nullable=False),
+)
+
+
+retention_runs = sa.Table(
+    "retention_runs", metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("dry_run", sa.Integer(), nullable=False),
+    sa.Column("status", sa.Text(), nullable=False),
+    sa.Column("started_at", sa.Text(), nullable=False),
+    sa.Column("finished_at", sa.Text()),
+    sa.Column("cutoffs_json", sa.Text(), nullable=False),
+    sa.Column("counts_json", sa.Text(), nullable=False),
+    sa.Column("error", sa.Text(), nullable=False, server_default=sa.text("''")),
 )
 
 
@@ -515,6 +769,12 @@ sa.Index("idx_scan_cycles_status", scan_cycles.c.status)
 sa.Index("idx_scan_cycles_user_id", scan_cycles.c.user_id)
 sa.Index("idx_listing_decision_traces_cycle", listing_decision_traces.c.scan_cycle_id)
 sa.Index("idx_listing_decision_traces_user_item", listing_decision_traces.c.user_id, listing_decision_traces.c.marketplace_item_id)
+sa.Index("idx_notification_attempts_user_created", notification_attempts.c.user_id, notification_attempts.c.created_at)
+sa.Index("idx_notification_attempts_cycle", notification_attempts.c.scan_cycle_id)
+sa.Index("idx_notification_attempts_item", notification_attempts.c.item_id)
+sa.Index("idx_push_subscriptions_user_enabled", push_subscriptions.c.user_id, push_subscriptions.c.enabled)
+sa.Index("idx_push_delivery_user_created", push_delivery_attempts.c.user_id, push_delivery_attempts.c.created_at)
+sa.Index("idx_push_delivery_subscription", push_delivery_attempts.c.subscription_id)
 sa.Index("idx_user_usage_daily_date", user_usage_daily.c.usage_date)
 
 
@@ -525,6 +785,8 @@ CORE_TABLES = {
         user_invites,
         user_settings,
         user_notification_settings,
+        push_subscriptions,
+        push_delivery_attempts,
         user_keywords,
         marketplace_items,
         user_item_states,
@@ -538,7 +800,9 @@ CORE_TABLES = {
         shared_scan_results,
         scan_cycles,
         worker_heartbeats,
+        worker_leases,
         listing_decision_traces,
+        notification_attempts,
         source_statuses,
         user_usage_daily,
     )
@@ -560,4 +824,6 @@ SERIAL_ID_TABLES = [
     shared_scan_results.name,
     scan_cycles.name,
     listing_decision_traces.name,
+    push_subscriptions.name,
+    push_delivery_attempts.name,
 ]

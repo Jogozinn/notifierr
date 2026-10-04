@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from cryptography.fernet import Fernet
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -89,6 +91,9 @@ def _env_cors_origins(default: list[str]) -> list[str]:
 
 @dataclass(frozen=True)
 class Settings:
+    runtime_env: str = "local"
+    process_role: str = "combined"
+    trusted_hosts: list[str] = field(default_factory=list)
     db_backend: str = "sqlite"
     database_url: Optional[str] = None
     ebay_client_id: Optional[str] = None
@@ -99,6 +104,9 @@ class Settings:
     ebay_fetch_descriptions: bool = False
     ebay_rate_limit_backoff_seconds: int = 900
     discord_webhook_url: Optional[str] = None
+    vapid_public_key: Optional[str] = None
+    vapid_private_key_b64: Optional[str] = None
+    vapid_subject: Optional[str] = None
     sqlite_path: Path = DATA_DIR / "notifierr.sqlite3"
     repair_values_path: Path = DEFAULT_REPAIR_VALUES_PATH
     resale_research_path: Path = DEFAULT_RESALE_RESEARCH_PATH
@@ -114,7 +122,7 @@ class Settings:
     max_active_queue_item_age_hours: int = 24
     stale_archive_after_days: int = 7
     background_poll_enabled: bool = False
-    background_poll_seconds: int = 300
+    background_poll_seconds: int = 600
     background_poll_active_start: Optional[str] = None
     background_poll_active_end: Optional[str] = None
     background_poll_timezone: str = "America/New_York"
@@ -135,6 +143,10 @@ class Settings:
         return bool(self.discord_webhook_url)
 
     @property
+    def push_configured(self) -> bool:
+        return bool(self.vapid_public_key and self.vapid_private_key_b64 and self.vapid_subject)
+
+    @property
     def score_threshold(self) -> float:
         return self.min_score_to_alert
 
@@ -148,6 +160,7 @@ class Settings:
             "database_configured": bool(self.database_url) if self.db_backend == "postgres" else True,
             "ebay_configured": self.ebay_configured,
             "discord_configured": self.discord_configured,
+            "push_configured": self.push_configured,
             "ebay_marketplace_id": self.ebay_marketplace_id,
             "ebay_fetch_descriptions": self.ebay_fetch_descriptions,
             "ebay_rate_limit_backoff_seconds": self.ebay_rate_limit_backoff_seconds,
@@ -176,15 +189,22 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    _load_dotenv(BASE_DIR / ".env")
-    _load_dotenv(Path.cwd() / ".env")
+    runtime_env = (os.getenv("NOTIFIERR_ENV") or "local").strip().lower()
+    if runtime_env not in {"local", "production"}:
+        raise ValueError("NOTIFIERR_ENV must be local or production")
+    if runtime_env == "local":
+        _load_dotenv(BASE_DIR / ".env")
+        _load_dotenv(Path.cwd() / ".env")
 
     sqlite_path = Path(os.getenv("SQLITE_PATH", str(DATA_DIR / "notifierr.sqlite3")))
     repair_values_path = Path(os.getenv("REPAIR_VALUES_PATH", str(DEFAULT_REPAIR_VALUES_PATH)))
     resale_research_path = Path(os.getenv("RESALE_RESEARCH_PATH", str(DEFAULT_RESALE_RESEARCH_PATH)))
     scoring_rules_path = Path(os.getenv("SCORING_RULES_PATH", str(DEFAULT_SCORING_RULES_PATH)))
 
-    return Settings(
+    result = Settings(
+        runtime_env=runtime_env,
+        process_role=(os.getenv("NOTIFIERR_ROLE") or ("api" if runtime_env == "production" else "combined")).strip().lower(),
+        trusted_hosts=_env_list("TRUSTED_HOSTS", []),
         db_backend=(os.getenv("DB_BACKEND", "sqlite") or "sqlite").strip().lower(),
         database_url=os.getenv("DATABASE_URL") or None,
         ebay_client_id=os.getenv("EBAY_CLIENT_ID"),
@@ -198,6 +218,9 @@ def load_settings() -> Settings:
         ebay_fetch_descriptions=_env_bool("EBAY_FETCH_DESCRIPTIONS", False),
         ebay_rate_limit_backoff_seconds=_env_int("EBAY_RATE_LIMIT_BACKOFF_SECONDS", 900),
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
+        vapid_public_key=os.getenv("VAPID_PUBLIC_KEY") or None,
+        vapid_private_key_b64=os.getenv("VAPID_PRIVATE_KEY_B64") or None,
+        vapid_subject=os.getenv("VAPID_SUBJECT") or None,
         sqlite_path=sqlite_path,
         repair_values_path=repair_values_path,
         resale_research_path=resale_research_path,
@@ -215,7 +238,7 @@ def load_settings() -> Settings:
         max_active_queue_item_age_hours=_env_int("MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS", 24),
         stale_archive_after_days=_env_int("STALE_ARCHIVE_AFTER_DAYS", 7),
         background_poll_enabled=_env_bool("BACKGROUND_POLL_ENABLED", False),
-        background_poll_seconds=_env_int("BACKGROUND_POLL_SECONDS", 300),
+        background_poll_seconds=_env_int("BACKGROUND_POLL_SECONDS", 600),
         background_poll_active_start=os.getenv("BACKGROUND_POLL_ACTIVE_START") or None,
         background_poll_active_end=os.getenv("BACKGROUND_POLL_ACTIVE_END") or None,
         background_poll_timezone=os.getenv("BACKGROUND_POLL_TIMEZONE", "America/New_York"),
@@ -227,6 +250,36 @@ def load_settings() -> Settings:
         admin_password=os.getenv("ADMIN_PASSWORD") or None,
         admin_display_name=os.getenv("ADMIN_DISPLAY_NAME") or None,
     )
+    validate_settings(result)
+    return result
+
+
+def validate_settings(settings: Settings) -> None:
+    if settings.process_role not in {"api", "scanner", "retention", "migrate", "combined"}:
+        raise ValueError("NOTIFIERR_ROLE must be api, scanner, retention, migrate, or combined")
+    if settings.runtime_env != "production":
+        return
+    if settings.process_role == "combined":
+        raise ValueError("Production requires a separate NOTIFIERR_ROLE")
+    if settings.db_backend != "postgres" or not settings.database_url or not settings.database_url.startswith(("postgres://", "postgresql://", "postgresql+psycopg://")):
+        raise ValueError("Production requires DB_BACKEND=postgres and a PostgreSQL DATABASE_URL")
+    if not settings.auth_required:
+        raise ValueError("Production requires AUTH_REQUIRED=true")
+    if len(settings.auth_secret_key) < 32 or settings.auth_secret_key == Settings().auth_secret_key:
+        raise ValueError("Production requires a non-default AUTH_SECRET_KEY of at least 32 characters")
+    if not settings.app_encryption_key:
+        raise ValueError("Production requires APP_ENCRYPTION_KEY")
+    try:
+        Fernet(settings.app_encryption_key.encode("utf-8"))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("APP_ENCRYPTION_KEY must be a valid Fernet key") from exc
+    if settings.process_role == "api":
+        if not settings.admin_email or not settings.admin_password or len(settings.admin_password) < 12:
+            raise ValueError("Production API requires ADMIN_EMAIL and a strong ADMIN_PASSWORD for initial bootstrap")
+        if not settings.cors_origins or any(not origin.startswith("https://") or "*" in origin for origin in settings.cors_origins):
+            raise ValueError("Production API requires explicit HTTPS CORS_ALLOWED_ORIGINS")
+        if not settings.trusted_hosts or "*" in settings.trusted_hosts:
+            raise ValueError("Production API requires explicit TRUSTED_HOSTS")
 
 
 def _env_list(name: str, default: list[str]) -> list[str]:

@@ -21,6 +21,9 @@ export default function ItemTable({
   onUpdateGlobalPartCost,
   onSaveCorrection,
   onClearCorrection,
+  onFeedback,
+  onLabel,
+  onOutcome,
   onNote,
 }) {
   const [expandedIds, setExpandedIds] = useState(() => new Set());
@@ -63,6 +66,7 @@ export default function ItemTable({
             </div>
 
             <div className="badge-row">
+              {item.alert_tier ? <Badge tone={tierTone(item.alert_tier)}>{item.alert_tier}</Badge> : null}
               <Badge tone={displayStatusTone(item)}>{displayStatusText(item)}</Badge>
               <AvailabilityBadges item={item} />
               {isPreviouslyAlerted(item) ? <Badge tone="neutral">Previously alerted</Badge> : null}
@@ -74,14 +78,18 @@ export default function ItemTable({
               <PricingBadge item={item} />
               <ContextBadges item={item} />
               <ReviewBadges item={item} />
+              {item.item_type ? <Badge tone={item.item_type === "component" ? "danger" : "neutral"}>{item.item_type.replace("_", " ")}</Badge> : null}
+              {item.feedback_label ? <Badge tone={item.feedback_label === "GOOD" ? "success" : "warning"}>{item.feedback_label}</Badge> : null}
+              {item.outcome_status ? <Badge tone="info">{item.outcome_status}</Badge> : null}
             </div>
 
             <div className="metric-grid">
               <Metric label="Price + shipping" value={`${currency(item.price)} + ${currency(item.shipping)} = ${currency(item.total_cost)}`} />
               <Metric label="Estimated parts" value={partsText(item)} />
               <Metric label={resaleMetricLabel(item)} value={resaleText(item)} />
-              <Metric label="Expected profit" value={profitText(item)} important={item.estimated_profit_available} />
+              <Metric label="Estimated profit" value={profitText(item)} important={item.estimated_profit_available} />
               <Metric label="Floor profit" value={floorProfitText(item)} />
+              {item.actual_net_profit !== null && item.actual_net_profit !== undefined ? <Metric label="Actual net profit" value={currency(item.actual_net_profit)} important /> : null}
             </div>
 
             <div className="detail-grid">
@@ -100,6 +108,7 @@ export default function ItemTable({
                 onUpdateGlobalPartCost={onUpdateGlobalPartCost}
                 onSaveCorrection={onSaveCorrection}
                 onClearCorrection={onClearCorrection}
+                onOutcome={onOutcome}
               />
             ) : null}
 
@@ -120,6 +129,22 @@ export default function ItemTable({
             <button type="button" onClick={() => onPromote(item)}>Promote/manual alert</button>
             <button type="button" onClick={() => onReject(item)}>Reject</button>
             <button type="button" onClick={() => onNote(item)}>Add note</button>
+            <div className="quick-feedback" aria-label="Your assessment">
+              {['GOOD', 'BAD', 'UNSURE'].map((label) => (
+                <button key={label} type="button" aria-pressed={item.feedback_label === label} onClick={() => onLabel(item, label)}>{label}</button>
+              ))}
+            </div>
+            <div className="quick-feedback" aria-label="Deal feedback">
+              <button type="button" onClick={() => onFeedback(item, "good_deal")}>Good deal</button>
+              <button type="button" onClick={() => onFeedback(item, "not_profitable")}>Not profitable</button>
+              <button type="button" onClick={() => onFeedback(item, "wrong_model")}>Wrong model</button>
+              <button type="button" onClick={() => onFeedback(item, "wrong_storage")}>Wrong storage</button>
+              <button type="button" onClick={() => onFeedback(item, "wrong_damage")}>Wrong damage</button>
+              <button type="button" onClick={() => onFeedback(item, "accessory_not_phone")}>Accessory/not a phone</button>
+              <button type="button" onClick={() => onFeedback(item, "too_risky")}>Too risky</button>
+              <button type="button" onClick={() => onFeedback(item, "already_sold")}>Already sold</button>
+              <button type="button" onClick={() => onFeedback(item, "pricing_wrong")}>Pricing wrong</button>
+            </div>
             <button type="button" onClick={() => toggleExpanded(item.item_id)}>
               {expanded ? "Hide details" : "View details"}
             </button>
@@ -141,6 +166,10 @@ export default function ItemTable({
       return next;
     });
   }
+}
+
+function tierTone(tier) {
+  return { GEM: "success", PROFITABLE: "info", REVIEW: "warning" }[tier] || "neutral";
 }
 
 function Metric({ label, value, important = false }) {
@@ -207,12 +236,14 @@ function StorageBadges({ item }) {
   ));
 }
 
-function ExpandedDetails({ item, isAdmin, onUpdatePartCost, onUpdateGlobalPartCost, onSaveCorrection, onClearCorrection }) {
+function ExpandedDetails({ item, isAdmin, onUpdatePartCost, onUpdateGlobalPartCost, onSaveCorrection, onClearCorrection, onOutcome }) {
   return (
     <div className="expanded-details">
       <DescriptionDetail text={cleanDescription(item.raw_description) || "Description not available from API."} />
       <RepairValuesDetail item={item} isAdmin={isAdmin} onUpdatePartCost={onUpdatePartCost} onUpdateGlobalPartCost={onUpdateGlobalPartCost} />
       <ItemCorrectionDetail item={item} onSaveCorrection={onSaveCorrection} onClearCorrection={onClearCorrection} />
+      <OutcomeEditor key={item.item_id} item={item} onSave={onOutcome} />
+      <Detail label="Item type reason" text={item.item_type_reason} />
       <Detail label="Good resale range" text={goodResaleRangeText(item)} />
       <Detail label="Good profit range" text={goodProfitRangeText(item)} />
       <Detail label="Mint resale range" text={mintResaleRangeText(item)} />
@@ -232,6 +263,37 @@ function ExpandedDetails({ item, isAdmin, onUpdatePartCost, onUpdateGlobalPartCo
       <Detail label="Resale source" text={resaleSourceText(item)} />
       <Detail label="Mint upside only" text={mintUpsideText(item)} />
     </div>
+  );
+}
+
+const OUTCOME_MONEY_FIELDS = [
+  ['purchase_price', 'Purchase price'], ['purchase_tax', 'Purchase tax'],
+  ['inbound_shipping', 'Inbound shipping'], ['parts_cost', 'Actual parts cost'],
+  ['other_repair_cost', 'Other repair cost'], ['sale_price', 'Sale price'],
+  ['selling_fees', 'Selling fees'], ['outbound_shipping', 'Outbound shipping'],
+  ['refund_amount', 'Refunds / returns'], ['other_cost', 'Other cost'],
+];
+
+function OutcomeEditor({ item, onSave }) {
+  const [values, setValues] = useState({ status: item.outcome_status || 'SKIPPED' });
+  return (
+    <form className="outcome-editor" onSubmit={(event) => {
+      event.preventDefault();
+      onSave(item, Object.fromEntries(Object.entries(values).filter(([, value]) => value !== '')));
+    }}>
+      <h4>Business outcome</h4>
+      <label>Status <select value={values.status} onChange={(event) => setValues({ ...values, status: event.target.value })}>
+        {['SKIPPED', 'PURCHASED', 'SOLD', 'FAILED_REPAIR'].map((status) => <option key={status}>{status}</option>)}
+      </select></label>
+      {OUTCOME_MONEY_FIELDS.map(([field, label]) => (
+        <label key={field}>{label} <input type="number" min="0" step="0.01" placeholder={item[field] ?? ''} value={values[field] ?? ''} onChange={(event) => setValues({ ...values, [field]: event.target.value })} /></label>
+      ))}
+      <label>Purchase date <input type="date" value={values.purchase_date ?? ''} onChange={(event) => setValues({ ...values, purchase_date: event.target.value })} /></label>
+      <label>Sale date <input type="date" value={values.sale_date ?? ''} onChange={(event) => setValues({ ...values, sale_date: event.target.value })} /></label>
+      <label>Repair type <input value={values.actual_repair_type ?? ''} onChange={(event) => setValues({ ...values, actual_repair_type: event.target.value })} /></label>
+      <label>Note <input value={values.note ?? ''} onChange={(event) => setValues({ ...values, note: event.target.value })} /></label>
+      <button type="submit">Save outcome</button>
+    </form>
   );
 }
 

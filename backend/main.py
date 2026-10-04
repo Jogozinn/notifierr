@@ -1,34 +1,53 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import copy
 import inspect
+import hashlib
 import json
 import logging
 import os
 import re
 import secrets
 import socket
+import time as monotonic_time
+import uuid
 from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
+from types import SimpleNamespace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 from pydantic import BaseModel, Field
 
+from .alerting import AlertDecision, evaluate_alert_decision
 from .auth import create_access_token, decode_access_token, hash_password, verify_password
 from .config import Settings, load_repair_values, load_resale_research, load_scoring_rules, load_settings
 from .db import create_storage
 from .ebay_client import EbayClient, EbayRateLimitError
 from .notifier import DiscordNotifier
+from .notification_delivery import destination_identity, notification_snapshot, successful_dedupe_reason
+from .push import endpoint_hash, push_destination_identity, send_push_to_user
+from .polling import (
+    MIN_POLL_SECONDS, consecutive_cycle_outcomes, resolve_poll_interval,
+    scan_success_overdue_after_seconds, stale_after_seconds, utc_now,
+)
+from .scan_lease import (
+    GLOBAL_SCAN_LEASE_RENEW_SECONDS,
+    inspect_lease_owner,
+    run_with_scan_lease,
+)
 from .scorer import extract_description_signals, score_listing
+from .decision_identity import decision_identity
 from .secrets import SecretConfigurationError, decrypt_secret, encrypt_secret, is_encrypted_secret
 from .storage import USER_ROLES
 
@@ -46,14 +65,260 @@ scoring_rules: dict[str, Any] = load_scoring_rules(settings.scoring_rules_path)
 storage = create_storage(settings)
 _scan_lock = asyncio.Lock()
 _background_poll_task: Optional[asyncio.Task] = None
+_background_supervisor_task: Optional[asyncio.Task] = None
+_background_poll_stopping = False
 _background_worker_started_at: Optional[str] = None
+_real_asyncio_sleep = asyncio.sleep
+_scan_work_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="notifierr-scan")
+_dashboard_freshness_cache: dict[int, dict[str, int]] = {}
+_pricing_context_cache: dict[int, UserPricingContext] = {}
+_dashboard_stats_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+_DASHBOARD_STATS_CACHE_SECONDS = 30
+_polling_status_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+_POLLING_STATUS_CACHE_SECONDS = 10
 _bearer = HTTPBearer(auto_error=False)
-MIN_BACKGROUND_POLL_SECONDS = 900
-BACKGROUND_WORKER_HEARTBEAT_GRACE_SECONDS = 60
+MIN_BACKGROUND_POLL_SECONDS = MIN_POLL_SECONDS
+WORKER_ID = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+BACKGROUND_LEASE_NAME = "background_poll"
+GLOBAL_SCAN_LEASE_NAME = "global_scan"
+BACKGROUND_LEASE_TTL_SECONDS = 180
+BACKGROUND_LEASE_RENEW_SECONDS = 60
+SCAN_WORKER_CANCEL_WAIT_SECONDS = 30
+MAX_DETAIL_REFRESHES_PER_SCAN = 15
+_background_leadership_acquired_at: Optional[str] = None
+_background_leadership_lost_at: Optional[str] = None
+
+
+class BackgroundLeadershipLostError(RuntimeError):
+    pass
 
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _invalidate_dashboard_user_cache(user_id: int) -> None:
+    _dashboard_freshness_cache.pop(int(user_id), None)
+    _dashboard_stats_cache.pop(int(user_id), None)
+    _polling_status_cache.pop(int(user_id), None)
+
+
+def _invalidate_pricing_context_cache(user_id: int) -> None:
+    _pricing_context_cache.pop(int(user_id), None)
+    _dashboard_stats_cache.pop(int(user_id), None)
+
+
+def _invalidate_all_dashboard_stats_cache() -> None:
+    _dashboard_stats_cache.clear()
+
+
+def _invalidate_polling_status_cache() -> None:
+    _polling_status_cache.clear()
+
+
+def _mark_background_leadership_acquired(now: datetime) -> None:
+    global _background_leadership_acquired_at, _background_leadership_lost_at
+    _background_leadership_acquired_at = now.isoformat()
+    _background_leadership_lost_at = None
+
+
+def _mark_background_leadership_lost(now: datetime) -> None:
+    global _background_leadership_acquired_at, _background_leadership_lost_at
+    if _background_leadership_lost_at is None:
+        _background_leadership_lost_at = now.isoformat()
+    _background_leadership_acquired_at = None
+
+
+def _background_lease_expiry(now: datetime) -> datetime:
+    return now + timedelta(seconds=BACKGROUND_LEASE_TTL_SECONDS)
+
+
+def _background_lease_owner_state(lease: dict[str, Any] | None) -> Any | None:
+    if not lease:
+        return None
+    return inspect_lease_owner(
+        lease,
+        local_hostname=_hostname(),
+        current_worker_id=WORKER_ID,
+        current_process_id=_process_id(),
+    )
+
+
+def _active_background_lease(lease: dict[str, Any] | None, now: datetime) -> bool:
+    expiry = _parse_utc_datetime(str((lease or {}).get("expires_at") or ""))
+    return bool(lease and expiry and expiry > now)
+
+
+def _is_current_background_leader(lease: dict[str, Any] | None, now: datetime | None = None) -> bool:
+    now = now or datetime.now(timezone.utc)
+    return bool(
+        lease
+        and str(lease.get("worker_id") or "") == WORKER_ID
+        and int(lease.get("process_id") or 0) == _process_id()
+        and _active_background_lease(lease, now)
+    )
+
+
+def _acquire_background_leadership(now: datetime | None = None) -> tuple[bool, dict[str, Any] | None, Any | None]:
+    """Acquire the scheduler leadership lease without stealing from live or unverifiable owners."""
+    now = now or datetime.now(timezone.utc)
+    expires_at = _background_lease_expiry(now)
+    previous = storage.get_worker_lease(BACKGROUND_LEASE_NAME)
+    previous_expiry = _parse_utc_datetime(str((previous or {}).get("expires_at") or ""))
+
+    if previous is None:
+        acquired = storage.acquire_worker_lease(
+            BACKGROUND_LEASE_NAME,
+            WORKER_ID,
+            hostname=_hostname(),
+            process_id=_process_id(),
+            now=now.isoformat(),
+            expires_at=expires_at.isoformat(),
+        )
+        if acquired:
+            _mark_background_leadership_acquired(now)
+        return acquired, storage.get_worker_lease(BACKGROUND_LEASE_NAME), None
+
+    if str(previous.get("worker_id") or "") == WORKER_ID:
+        acquired = storage.acquire_worker_lease(
+            BACKGROUND_LEASE_NAME,
+            WORKER_ID,
+            hostname=_hostname(),
+            process_id=_process_id(),
+            now=now.isoformat(),
+            expires_at=expires_at.isoformat(),
+        )
+        if acquired:
+            _mark_background_leadership_acquired(now)
+        return acquired, storage.get_worker_lease(BACKGROUND_LEASE_NAME), _background_lease_owner_state(previous)
+
+    if previous_expiry is not None and previous_expiry <= now:
+        acquired = storage.takeover_worker_lease(
+            BACKGROUND_LEASE_NAME,
+            WORKER_ID,
+            hostname=_hostname(),
+            process_id=_process_id(),
+            now=now.isoformat(),
+            expires_at=expires_at.isoformat(),
+            expected_worker_id=str(previous.get("worker_id") or ""),
+            expected_expires_at=str(previous.get("expires_at") or ""),
+            reason="lease_expired",
+        )
+        if acquired:
+            _mark_background_leadership_acquired(now)
+        else:
+            _mark_background_leadership_lost(now)
+        return acquired, storage.get_worker_lease(BACKGROUND_LEASE_NAME), _background_lease_owner_state(previous)
+
+    owner_state = _background_lease_owner_state(previous)
+    if owner_state and owner_state.state == "absent":
+        acquired = storage.takeover_worker_lease(
+            BACKGROUND_LEASE_NAME,
+            WORKER_ID,
+            hostname=_hostname(),
+            process_id=_process_id(),
+            now=now.isoformat(),
+            expires_at=expires_at.isoformat(),
+            expected_worker_id=str(previous.get("worker_id") or ""),
+            expected_expires_at=str(previous.get("expires_at") or ""),
+            reason="confirmed_local_owner_absent",
+        )
+        if acquired:
+            _mark_background_leadership_acquired(now)
+            logger.warning(
+                "Background poll leadership recovered from dead local owner previous_worker_id=%s previous_pid=%s",
+                previous.get("worker_id"),
+                previous.get("process_id"),
+            )
+        else:
+            _mark_background_leadership_lost(now)
+        return acquired, storage.get_worker_lease(BACKGROUND_LEASE_NAME), owner_state
+
+    _mark_background_leadership_lost(now)
+    return False, previous, owner_state
+
+
+def _renew_background_leadership(now: datetime | None = None) -> bool:
+    now = now or datetime.now(timezone.utc)
+    renewed = storage.renew_worker_lease(
+        BACKGROUND_LEASE_NAME,
+        WORKER_ID,
+        now=now.isoformat(),
+        expires_at=_background_lease_expiry(now).isoformat(),
+    )
+    if renewed:
+        _mark_background_leadership_acquired(now)
+    else:
+        _mark_background_leadership_lost(now)
+    return renewed
+
+
+async def _background_leadership_renewer() -> None:
+    while True:
+        await _real_asyncio_sleep(BACKGROUND_LEASE_RENEW_SECONDS)
+        if not _renew_background_leadership():
+            raise BackgroundLeadershipLostError("background poll leadership lease was lost")
+        logger.info(
+            "Renewed background poll leadership lease worker_id=%s ttl_seconds=%s",
+            WORKER_ID,
+            BACKGROUND_LEASE_TTL_SECONDS,
+        )
+
+
+async def _await_with_background_leadership(task: asyncio.Task, renewal_task: asyncio.Task) -> Any:
+    done, _ = await asyncio.wait({task, renewal_task}, return_when=asyncio.FIRST_COMPLETED)
+    if renewal_task in done:
+        error = renewal_task.exception()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if error:
+            raise error
+        raise BackgroundLeadershipLostError("background poll leadership renewal stopped unexpectedly")
+    return await task
+
+
+async def _sleep_with_background_leadership(seconds: int, renewal_task: asyncio.Task) -> None:
+    sleep_task = asyncio.create_task(asyncio.sleep(max(1, int(seconds))))
+    try:
+        await _await_with_background_leadership(sleep_task, renewal_task)
+    finally:
+        if not sleep_task.done():
+            sleep_task.cancel()
+            await asyncio.gather(sleep_task, return_exceptions=True)
+
+
+def _run_scan_coroutine_sync(coro_factory: Any) -> Any:
+    return asyncio.run(coro_factory())
+
+
+async def _run_background_scan_work(coro_factory: Any, *, label: str) -> Any:
+    """Run blocking scan work off the API loop while lease orchestration stays on-loop.
+
+    The worker owns no long-lived DB session; scan code opens/closes storage connections
+    per operation. The main loop still owns the global scan lease, process-local scan
+    lock, cycle finalization, and scheduler leadership renewal.
+    """
+    loop = asyncio.get_running_loop()
+    started = monotonic_time.perf_counter()
+    worker_future = loop.run_in_executor(_scan_work_executor, _run_scan_coroutine_sync, coro_factory)
+    try:
+        return await asyncio.shield(worker_future)
+    except asyncio.CancelledError:
+        logger.warning(
+            "Background scan worker cancellation requested label=%s wait_seconds=%s",
+            label,
+            SCAN_WORKER_CANCEL_WAIT_SECONDS,
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(worker_future), timeout=SCAN_WORKER_CANCEL_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.error(
+                "Background scan worker still running after cancellation wait label=%s elapsed_seconds=%.3f",
+                label,
+                monotonic_time.perf_counter() - started,
+            )
+        raise
 
 
 def _empty_polling_status() -> dict[str, Any]:
@@ -77,6 +342,7 @@ def _empty_polling_status() -> dict[str, Any]:
         "cycles_attempted": 0,
         "cycles_succeeded": 0,
         "cycles_failed": 0,
+        "consecutive_failures": 0,
         "last_scan_summary": {},
         "last_alerts_found": 0,
         "last_alerts_sent": 0,
@@ -166,6 +432,8 @@ class PollingStatusTracker:
                 "last_cycle_finished_at": _utc_now_iso(),
                 "last_success_at": _utc_now_iso(),
                 "cycles_succeeded": int(self.state.get("cycles_succeeded") or 0) + 1,
+                "consecutive_failures": 0,
+                "last_error": "",
                 "last_scan_summary": _compact_scan_summary(summary),
                 "last_alerts_found": int(summary.get("best_finds") or summary.get("candidates") or 0),
                 "last_alerts_sent": int(summary.get("alerts_sent") or summary.get("alerted") or 0),
@@ -180,6 +448,7 @@ class PollingStatusTracker:
                 "last_failure_at": _utc_now_iso(),
                 "last_error": f"{type(error).__name__}: {error}",
                 "cycles_failed": int(self.state.get("cycles_failed") or 0) + 1,
+                "consecutive_failures": int(self.state.get("consecutive_failures") or 0) + 1,
             }
         )
 
@@ -241,93 +510,25 @@ def _positive_int(value: Any, default: int) -> int:
     return max(1, parsed)
 
 
-def _safe_background_poll_seconds(
-    requested_seconds: int,
-    *,
-    interval_source: str,
-    config_seconds: int,
-    user_seconds: int | None = None,
-) -> int:
-    requested_seconds = _positive_int(requested_seconds, config_seconds or MIN_BACKGROUND_POLL_SECONDS)
-    if requested_seconds < MIN_BACKGROUND_POLL_SECONDS:
-        logger.warning(
-            "Background poll interval below safe minimum; clamping requested_seconds=%s "
-            "safe_min_seconds=%s interval_source=%s config_poll_seconds=%s user_poll_seconds=%s",
-            requested_seconds,
-            MIN_BACKGROUND_POLL_SECONDS,
-            interval_source,
-            config_seconds,
-            user_seconds,
-        )
-        return MIN_BACKGROUND_POLL_SECONDS
-    return requested_seconds
-
-
 def _resolve_background_poll_sleep_seconds(
     *,
     mode: str,
     current_settings: Any | None = None,
     enabled_users: list[Any] | None = None,
 ) -> dict[str, Any]:
-    config_seconds = _positive_int(settings.background_poll_seconds, MIN_BACKGROUND_POLL_SECONDS)
-    user_seconds: int | None = None
-    interval_source = "config"
-    requested_seconds = config_seconds
-
+    persisted = []
     if settings.auth_required and enabled_users:
-        user_values = [_positive_int(getattr(resolved, "background_poll_seconds", config_seconds), config_seconds) for resolved in enabled_users]
-        if user_values:
-            user_seconds = min(user_values)
-            requested_seconds = user_seconds
-            interval_source = "user_min"
+        persisted = [getattr(resolved, "background_poll_seconds", None) for resolved in enabled_users]
     elif mode == "local_background" and current_settings is not None:
-        user_seconds = _positive_int(getattr(current_settings, "background_poll_seconds", config_seconds), config_seconds)
-        requested_seconds = config_seconds
-        interval_source = "config_local"
-
-    final_seconds = _safe_background_poll_seconds(
-        requested_seconds,
-        interval_source=interval_source,
-        config_seconds=config_seconds,
-        user_seconds=user_seconds,
-    )
+        persisted = [getattr(current_settings, "background_poll_seconds", None)]
+    interval = resolve_poll_interval(configured=settings.background_poll_seconds, persisted=persisted)
+    user_seconds = interval.effective_seconds if persisted else None
     return {
-        "config_seconds": config_seconds,
+        "config_seconds": interval.configured_seconds,
         "user_seconds": user_seconds,
-        "final_seconds": final_seconds,
-        "interval_source": interval_source,
+        "final_seconds": interval.effective_seconds,
+        "interval_source": interval.source,
     }
-
-
-def _background_worker_heartbeat_stale_after_seconds() -> int:
-    return max(
-        MIN_BACKGROUND_POLL_SECONDS + BACKGROUND_WORKER_HEARTBEAT_GRACE_SECONDS,
-        _positive_int(settings.background_poll_seconds, MIN_BACKGROUND_POLL_SECONDS)
-        + BACKGROUND_WORKER_HEARTBEAT_GRACE_SECONDS,
-    )
-
-
-def _fresh_external_background_worker_heartbeat() -> dict[str, Any] | None:
-    now = datetime.now(timezone.utc)
-    stale_after_seconds = _background_worker_heartbeat_stale_after_seconds()
-    current_pid = _process_id()
-    current_hostname = _hostname()
-    for heartbeat in storage.get_worker_heartbeats():
-        if str(heartbeat.get("worker_name") or "") != "background_poll":
-            continue
-        if str(heartbeat.get("status") or "") not in {"running", "sleeping", "scanning"}:
-            continue
-        process_id = int(heartbeat.get("process_id") or 0)
-        hostname = str(heartbeat.get("hostname") or "")
-        if process_id == current_pid and hostname == current_hostname:
-            continue
-        last_seen = _parse_utc_datetime(str(heartbeat.get("last_seen_at") or ""))
-        if not last_seen:
-            continue
-        age_seconds = (now - last_seen).total_seconds()
-        if age_seconds <= stale_after_seconds:
-            return {**heartbeat, "_age_seconds": age_seconds, "_stale_after_seconds": stale_after_seconds}
-    return None
 
 
 def _jsonable_flags(value: Any) -> list[str]:
@@ -412,6 +613,7 @@ def _scan_cycle_context(
         "user_id": user_id,
         "process_id": _process_id(),
         "hostname": _hostname(),
+        "worker_id": WORKER_ID,
         "auth_required": bool(settings.auth_required),
         "background_poll_enabled": bool(getattr(current_settings, "background_poll_enabled", settings.background_poll_enabled)),
         "background_poll_seconds": int(getattr(current_settings, "background_poll_seconds", settings.background_poll_seconds) or 0),
@@ -507,6 +709,9 @@ def _finish_scan_cycle_from_summary(
         retry_after_seconds=retry_after_seconds,
         **finish_kwargs,
     )
+    if status == "completed":
+        _invalidate_all_dashboard_stats_cache()
+    _invalidate_polling_status_cache()
 
 
 def _rate_limit_cycle_metadata(
@@ -774,7 +979,31 @@ class ItemCorrectionRequest(BaseModel):
     corrected_storage_capacity: Optional[str] = Field(default=None, max_length=20)
     corrected_issue_type: Optional[str] = Field(default=None, max_length=40)
     corrected_part_cost: Optional[float] = Field(default=None, ge=0)
+    feedback_code: Optional[str] = Field(default=None, max_length=40)
     note: str = Field(default="", max_length=1000)
+
+
+class ItemFeedbackRequest(BaseModel):
+    label: Literal["GOOD", "BAD", "UNSURE"]
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ItemOutcomeRequest(BaseModel):
+    status: Literal["SKIPPED", "PURCHASED", "SOLD", "FAILED_REPAIR"]
+    purchase_price: Optional[float] = Field(default=None, ge=0)
+    purchase_tax: Optional[float] = Field(default=None, ge=0)
+    inbound_shipping: Optional[float] = Field(default=None, ge=0)
+    purchase_date: Optional[str] = Field(default=None, max_length=32)
+    actual_repair_type: Optional[str] = Field(default=None, max_length=120)
+    parts_cost: Optional[float] = Field(default=None, ge=0)
+    other_repair_cost: Optional[float] = Field(default=None, ge=0)
+    sale_date: Optional[str] = Field(default=None, max_length=32)
+    sale_price: Optional[float] = Field(default=None, ge=0)
+    selling_fees: Optional[float] = Field(default=None, ge=0)
+    outbound_shipping: Optional[float] = Field(default=None, ge=0)
+    refund_amount: Optional[float] = Field(default=None, ge=0)
+    other_cost: Optional[float] = Field(default=None, ge=0)
+    note: Optional[str] = Field(default=None, max_length=1000)
 
 
 class IgnoredKeywordRequest(BaseModel):
@@ -834,8 +1063,8 @@ class TraceReplayRequest(BaseModel):
     source_cycle_id: Optional[int] = Field(default=None, ge=1)
     item_ids: list[str] = Field(default_factory=list)
     rescore_from_raw: bool = False
-    write_traces: bool = True
-    dry_run: bool = False
+    write_traces: bool = False
+    dry_run: bool = True
 
 
 class UserSettingsUpdateRequest(BaseModel):
@@ -850,7 +1079,7 @@ class UserSettingsUpdateRequest(BaseModel):
     allow_mint_for_alerts: bool = False
     target_min_model_generation: int = Field(default=0, ge=0, le=30)
     background_poll_enabled: bool = False
-    background_poll_seconds: int = Field(default=300, ge=0, le=86400)
+    background_poll_seconds: int = Field(default=600, ge=300, le=1200)
     active_start: Optional[str] = Field(default=None, max_length=10)
     active_end: Optional[str] = Field(default=None, max_length=10)
     timezone: str = Field(default="America/New_York", max_length=80)
@@ -860,9 +1089,48 @@ class UserNotificationSettingsUpdateRequest(BaseModel):
     discord_webhook: Optional[str] = Field(default=None, max_length=2000)
     clear_discord_webhook: bool = False
     discord_enabled: bool = False
+    push_enabled: bool = True
+    use_global_discord_webhook: bool = False
     alerts_enabled: bool = True
     notify_best_finds: bool = True
     notify_priority_review: bool = True
+    send_gem_immediately: bool = True
+    send_profitable_immediately: bool = True
+    review_delivery_mode: str = Field(default="immediate", pattern="^(immediate|digest|off)$")
+    max_review_alerts_per_hour: int = Field(default=2, ge=0, le=60)
+    duplicate_suppression_hours: int = Field(default=72, ge=1, le=720)
+    meaningful_price_drop_amount: float = Field(default=20, ge=0)
+    meaningful_price_drop_percent: float = Field(default=0.05, ge=0, le=1)
+    meaningful_profit_increase_amount: float = Field(default=25, ge=0)
+    meaningful_profit_increase_percent: float = Field(default=0.15, ge=0, le=10)
+    meaningful_roi_increase: float = Field(default=0.10, ge=0, le=10)
+    catchup_enabled: bool = True
+    catchup_batch_size: int = Field(default=5, ge=1, le=50)
+    catchup_include_review: bool = False
+    gem_min_expected_profit: float = Field(default=75, ge=0)
+    profitable_min_expected_profit: float = Field(default=50, ge=0)
+    review_min_expected_profit: float = Field(default=25, ge=0)
+    review_min_upside_profit: float = Field(default=60, ge=0)
+    gem_min_roi: float = Field(default=0.25, ge=0, le=10)
+    profitable_min_roi: float = Field(default=0.15, ge=0, le=10)
+    review_min_roi: float = Field(default=0.05, ge=0, le=10)
+    max_listing_age_minutes: int = Field(default=360, ge=15, le=10080)
+
+
+class PushSubscriptionKeysRequest(BaseModel):
+    p256dh: str = Field(min_length=1, max_length=1000)
+    auth: str = Field(min_length=1, max_length=1000)
+
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str = Field(min_length=10, max_length=4096)
+    keys: PushSubscriptionKeysRequest
+    device_label: str = Field(default="Browser/PWA", max_length=120)
+    user_agent: str = Field(default="", max_length=500)
+
+
+class PushSubscriptionDeleteRequest(BaseModel):
+    endpoint: str = Field(min_length=10, max_length=4096)
 
 
 class UserKeywordCreateRequest(BaseModel):
@@ -976,6 +1244,17 @@ SUPPORTED_CORRECTION_ISSUE_TYPES = {
     "screen_display_issue",
     "multiple_issues",
     "unknown",
+}
+SUPPORTED_FEEDBACK_CODES = {
+    "good_deal",
+    "not_profitable",
+    "wrong_model",
+    "wrong_storage",
+    "wrong_damage",
+    "accessory_not_phone",
+    "too_risky",
+    "already_sold",
+    "pricing_wrong",
 }
 SUPPORTED_BILLING_STATUSES = {"trial", "active", "past_due", "manual", "comped", ""}
 
@@ -1096,14 +1375,54 @@ def require_settings_user(
     return _local_settings_user()
 
 
+def require_polling_status_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> dict[str, Any]:
+    if settings.auth_required:
+        user = _get_current_user(credentials, require_token=True)
+        if not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        return user
+    user = _get_current_user(credentials, require_token=False, ignore_invalid_token=True)
+    return user or {"id": 0, "role": "admin", "account_status": "active"}
+
+
 def _default_notification_settings_payload() -> dict[str, Any]:
     return {
         "discord_enabled": False,
+        "push_enabled": True,
+        "use_global_discord_webhook": False,
         "alerts_enabled": True,
         "notify_best_finds": True,
         "notify_priority_review": True,
+        "send_gem_immediately": True,
+        "send_profitable_immediately": True,
+        "review_delivery_mode": "immediate",
+        "max_review_alerts_per_hour": 2,
+        "duplicate_suppression_hours": 72,
+        "meaningful_price_drop_amount": 20.0,
+        "meaningful_price_drop_percent": 0.05,
+        "meaningful_profit_increase_amount": 25.0,
+        "meaningful_profit_increase_percent": 0.15,
+        "meaningful_roi_increase": 0.10,
+        "catchup_enabled": True,
+        "catchup_batch_size": 5,
+        "catchup_include_review": False,
+        "gem_min_expected_profit": 75.0,
+        "profitable_min_expected_profit": 50.0,
+        "review_min_expected_profit": 25.0,
+        "review_min_upside_profit": 60.0,
+        "gem_min_roi": 0.25,
+        "profitable_min_roi": 0.15,
+        "review_min_roi": 0.05,
+        "max_listing_age_minutes": 360,
         "discord_webhook": "",
         "discord_webhook_configured": False,
+        "global_discord_webhook_configured": False,
+        "webhook_configured": False,
+        "webhook_source": None,
+        "notification_ready": False,
+        "notification_block_reason": "webhook_missing",
         "_discord_webhook_raw": "",
         "created_at": None,
         "updated_at": None,
@@ -1150,7 +1469,7 @@ def _warn_if_hosted_without_encryption() -> None:
         )
 
 
-def _normalize_notification_settings(user_id: int, notifications: dict[str, Any] | None) -> dict[str, Any] | None:
+def _normalize_notification_settings(user_id: int, notifications: dict[str, Any] | None, *, migrate_plaintext: bool = True) -> dict[str, Any] | None:
     if not notifications:
         return None
     stored_value = str(notifications.get("_discord_webhook_raw") or notifications.get("discord_webhook") or "").strip()
@@ -1166,7 +1485,7 @@ def _normalize_notification_settings(user_id: int, notifications: dict[str, Any]
             logger.warning("Could not decrypt Discord webhook user_id=%s error=%s", user_id, exc)
             resolved_webhook = ""
         else:
-            if not is_encrypted_secret(stored_value):
+            if not is_encrypted_secret(stored_value) and migrate_plaintext:
                 if settings.app_encryption_key:
                     try:
                         encrypted_value = encrypt_secret(resolved_webhook, settings.app_encryption_key)
@@ -1199,18 +1518,39 @@ def _untouched_local_notification_defaults(data: dict[str, Any]) -> bool:
 
 def _resolve_notification_settings(
     data: dict[str, Any] | None,
-    *,
-    allow_global_webhook_fallback: bool,
 ) -> dict[str, Any]:
     resolved = {**_default_notification_settings_payload(), **(data or {})}
     raw_webhook = str(resolved.get("_resolved_webhook_raw") or resolved.get("_discord_webhook_raw") or "").strip()
     global_webhook = str(settings.discord_webhook_url or "").strip()
-    use_global_fallback = bool(allow_global_webhook_fallback and not raw_webhook and global_webhook)
-    resolved["_resolved_webhook_url"] = raw_webhook or (global_webhook if use_global_fallback else "")
-    resolved["uses_global_webhook_fallback"] = use_global_fallback
-    resolved["discord_enabled_effective"] = bool(resolved.get("discord_enabled")) or (
-        use_global_fallback and (data is None or _untouched_local_notification_defaults(resolved))
-    )
+    use_global_opt_in = bool(resolved.get("use_global_discord_webhook"))
+    destination = raw_webhook or (global_webhook if use_global_opt_in and global_webhook else "")
+    destination_source = "per_user" if raw_webhook else "global_opt_in" if destination else None
+    user_id = int(resolved.get("user_id") or 0)
+    active_push_subscriptions = len(storage.list_push_subscriptions(user_id, enabled_only=True)) if user_id else 0
+    push_ready = bool(resolved.get("push_enabled", True)) and settings.push_configured and active_push_subscriptions > 0
+    discord_ready = bool(resolved.get("discord_enabled")) and bool(destination)
+    if not bool(resolved.get("alerts_enabled")):
+        block_reason = "notifications_disabled"
+    elif discord_ready or push_ready:
+        block_reason = None
+    elif bool(resolved.get("discord_enabled")):
+        block_reason = "global_fallback_not_authorized" if global_webhook and not use_global_opt_in else "webhook_missing"
+    elif bool(resolved.get("push_enabled", True)) and settings.push_configured:
+        block_reason = "push_device_not_subscribed"
+    else:
+        block_reason = "discord_disabled"
+    resolved["_resolved_webhook_url"] = destination
+    resolved["uses_global_webhook_fallback"] = destination_source == "global_opt_in"
+    resolved["discord_enabled_effective"] = bool(resolved.get("discord_enabled"))
+    resolved["push_enabled_effective"] = bool(resolved.get("push_enabled", True))
+    resolved["push_configured"] = settings.push_configured
+    resolved["push_ready"] = push_ready
+    resolved["active_push_subscriptions"] = active_push_subscriptions
+    resolved["global_discord_webhook_configured"] = bool(global_webhook)
+    resolved["webhook_configured"] = bool(destination)
+    resolved["webhook_source"] = destination_source
+    resolved["notification_ready"] = block_reason is None
+    resolved["notification_block_reason"] = block_reason
     return resolved
 
 
@@ -1228,6 +1568,7 @@ def _resolve_effective_user_settings(
     *,
     allow_local_fallback: bool = True,
     ensure_defaults: bool = True,
+    migrate_plaintext_webhook: bool = True,
 ) -> EffectiveUserSettings:
     selected_user = user
     if not selected_user and allow_local_fallback:
@@ -1249,14 +1590,12 @@ def _resolve_effective_user_settings(
         _normalize_notification_settings(
             int(selected_user["id"]),
             storage.get_user_notification_settings(int(selected_user["id"])),
+            migrate_plaintext=migrate_plaintext_webhook,
         )
         if selected_user
         else None
     )
-    resolved_notifications = _resolve_notification_settings(
-        notifications,
-        allow_global_webhook_fallback=not settings.auth_required,
-    )
+    resolved_notifications = _resolve_notification_settings(notifications)
     keywords = _resolve_scan_keywords(selected_user)
     limited, reason = _billing_access_state(selected_user)
     if limited:
@@ -1265,6 +1604,8 @@ def _resolve_effective_user_settings(
             **resolved_notifications,
             "alerts_enabled": False,
             "discord_enabled_effective": False,
+            "notification_ready": False,
+            "notification_block_reason": "notifications_disabled",
             "billing_access_reason": reason,
         }
 
@@ -1349,6 +1690,15 @@ def _pricing_context_for_user(user_id: int, cache: dict[int, UserPricingContext]
     context = _build_user_pricing_context(user_id)
     if cache is not None:
         cache[user_id] = context
+    return context
+
+
+def _cached_pricing_context_for_user(user_id: int) -> UserPricingContext:
+    user_id = int(user_id)
+    context = _pricing_context_cache.get(user_id)
+    if context is None:
+        context = _build_user_pricing_context(user_id)
+        _pricing_context_cache[user_id] = context
     return context
 
 
@@ -1539,8 +1889,13 @@ def _decorate_item_for_user(
     *,
     user_id: int,
     pricing_context: UserPricingContext | None = None,
+    correction_by_item_id: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    correction = storage.get_user_item_correction(user_id, item["item_id"]) or {}
+    correction = (
+        (correction_by_item_id or {}).get(str(item["item_id"]))
+        if correction_by_item_id is not None
+        else storage.get_user_item_correction(user_id, item["item_id"])
+    ) or {}
     context = pricing_context or _build_user_pricing_context(user_id)
     repair_snapshot = _repair_snapshot_for_item(
         item,
@@ -1561,6 +1916,127 @@ def _decorate_item_for_user(
         **raw_snapshot,
         "effective_issue_type": effective_issue_type,
         "user_item_correction": correction,
+    }
+
+
+def _decorate_alert_decision(item: dict[str, Any], current_settings: Any) -> dict[str, Any]:
+    result_view = SimpleNamespace(**item)
+    decision = evaluate_alert_decision(item, result_view, current_settings)
+    return {
+        **item,
+        "alert_tier": decision.tier,
+        "tier_eligible": decision.eligible,
+        "alert_decision": decision.as_dict(),
+    }
+
+
+def _dashboard_freshness_kwargs(user_id: int) -> dict[str, int]:
+    user_id = int(user_id)
+    cached = _dashboard_freshness_cache.get(user_id)
+    if cached is not None:
+        return dict(cached)
+    user_settings = storage.get_user_settings(user_id) or {}
+    freshness = {
+        "max_alert_item_age_minutes": int(user_settings.get("max_alert_item_age_minutes") or settings.max_alert_item_age_minutes),
+        "max_priority_review_item_age_hours": int(user_settings.get("max_priority_review_item_age_hours") or settings.max_priority_review_item_age_hours),
+        "max_active_queue_item_age_hours": int(user_settings.get("max_active_queue_item_age_hours") or settings.max_active_queue_item_age_hours),
+    }
+    _dashboard_freshness_cache[user_id] = dict(freshness)
+    return freshness
+
+
+def _polling_settings_for_status(user: dict[str, Any] | None) -> Any:
+    if not user:
+        return SimpleNamespace(
+            background_poll_enabled=settings.background_poll_enabled,
+            background_poll_seconds=settings.background_poll_seconds,
+            background_poll_active_start=settings.background_poll_active_start,
+            background_poll_active_end=settings.background_poll_active_end,
+            background_poll_timezone=settings.background_poll_timezone,
+        )
+    row = storage.get_user_settings(int(user["id"])) or {}
+    return SimpleNamespace(
+        background_poll_enabled=bool(row.get("background_poll_enabled", settings.background_poll_enabled)),
+        background_poll_seconds=int(row.get("background_poll_seconds") or settings.background_poll_seconds),
+        background_poll_active_start=row.get("active_start", settings.background_poll_active_start),
+        background_poll_active_end=row.get("active_end", settings.background_poll_active_end),
+        background_poll_timezone=str(row.get("timezone", settings.background_poll_timezone) or settings.background_poll_timezone),
+    )
+
+
+def _cached_dashboard_stats_for_user(user_id: int) -> dict[str, Any]:
+    user_id = int(user_id)
+    now = monotonic_time.perf_counter()
+    cached = _dashboard_stats_cache.get(user_id)
+    if cached and now - cached[0] <= _DASHBOARD_STATS_CACHE_SECONDS:
+        return copy.deepcopy(cached[1])
+    payload = storage.stats_for_user(
+        user_id,
+        **_dashboard_freshness_kwargs(user_id),
+    )
+    payload["scan_funnel"] = _latest_scan_funnel(user_id)
+    resolved = _resolve_effective_user_settings(storage.get_user(user_id, include_password_hash=True))
+    delivered = storage.successfully_notified_item_ids(user_id)
+    tiers = Counter()
+    never_notified = 0
+    for item in storage.list_user_items(user_id, limit=500, include_stale=False, **resolved.freshness_kwargs()):
+        decorated = _decorate_item_for_user(item, user_id=user_id, pricing_context=_cached_pricing_context_for_user(user_id))
+        decision = evaluate_alert_decision(decorated, SimpleNamespace(), resolved)
+        if decision.tier:
+            tiers[decision.tier] += 1
+            if decision.tier in {"GEM", "PROFITABLE"} and str(item.get("item_id") or "") not in delivered:
+                never_notified += 1
+    delivery = storage.notification_delivery_metrics(user_id)
+    payload["notification_delivery"] = {
+        **delivery,
+        "actionable_listings": sum(tiers.values()),
+        "notification_candidates": sum(tiers.values()),
+        "never_notified_active_actionable": never_notified,
+    }
+    payload["unsent_actionable"] = never_notified
+    _dashboard_stats_cache[user_id] = (now, copy.deepcopy(payload))
+    return payload
+
+
+def _latest_scan_funnel(user_id: int) -> dict[str, Any]:
+    cycle = storage.latest_successful_scan_cycle_for_modes(["shared_background", "local_background", "manual"])
+    if not cycle:
+        return {}
+    traces = [row for row in storage.list_decision_traces_for_cycle(int(cycle["id"]), limit=2000) if int(row.get("user_id") or 0) == int(user_id)]
+    tier_counts = Counter()
+    whole_phones = 0
+    potentially_profitable = 0
+    detail_fetched = 0
+    lost_reasons = Counter()
+    for row in traces:
+        trace = row.get("trace") or {}
+        decision = trace.get("alert_decision") or {}
+        tier = decision.get("tier")
+        if tier:
+            tier_counts[str(tier)] += 1
+        detected = trace.get("detected") or {}
+        verdict = trace.get("verdict") or {}
+        if float(verdict.get("confidence") or 0) >= 3 and not detected.get("accessory_or_part_only"):
+            whole_phones += 1
+        if float(decision.get("expected_profit") or 0) > 0 or float(decision.get("upside_profit") or 0) > 0:
+            potentially_profitable += 1
+        if detected.get("detail_fetch_status") == "succeeded":
+            detail_fetched += 1
+        lost_reasons.update(decision.get("blocking_reasons") or [])
+    return {
+        "cycle_id": cycle.get("id"),
+        "found": int(cycle.get("items_found") or 0),
+        "unique": int(cycle.get("new_items_found") or 0),
+        "detail_fetched": detail_fetched,
+        "scored": int(cycle.get("items_scored") or len(traces)),
+        "whole_phones": whole_phones,
+        "potentially_profitable": potentially_profitable,
+        "gem": int(tier_counts["GEM"]),
+        "profitable": int(tier_counts["PROFITABLE"]),
+        "review": int(tier_counts["REVIEW"]),
+        "alert_attempted": int(cycle.get("alerts_attempted") or 0),
+        "alert_sent": int(cycle.get("alerts_sent") or 0),
+        "lost_reasons": lost_reasons.most_common(8),
     }
 
 
@@ -1650,6 +2126,7 @@ def _build_shared_search_plan(
     *,
     limit: int,
     keyword_filter: list[str] | None = None,
+    include_system_rotation: bool = False,
 ) -> list[SharedSearchPlanEntry]:
     normalized_filter = {_normalize_keyword(keyword) for keyword in (keyword_filter or []) if _normalize_keyword(keyword)}
     plan_by_signature: dict[str, SharedSearchPlanEntry] = {}
@@ -1676,7 +2153,49 @@ def _build_shared_search_plan(
                 )
                 plan_by_signature[signature] = entry
             entry.subscribers.append(resolved)
+    if include_system_rotation and not normalized_filter:
+        for raw_keyword in _rotating_system_searches():
+            signature = _search_signature(raw_keyword, limit)
+            if signature in plan_by_signature:
+                continue
+            quality = storage.recent_search_quality(raw_keyword)
+            if quality["samples"] >= 6 and quality["duplicate_rate"] >= 0.98 and quality["viable_rate"] < 0.03:
+                continue
+            plan_by_signature[signature] = SharedSearchPlanEntry(
+                signature=signature,
+                keyword=raw_keyword,
+                limit=int(limit),
+                sort="newlyListed",
+                marketplace="ebay",
+                marketplace_id=settings.ebay_marketplace_id,
+                subscribers=list(resolved_users),
+            )
     return list(plan_by_signature.values())
+
+
+ROTATING_SEARCH_MODELS = (
+    "iPhone 13", "iPhone 13 Pro", "iPhone 13 Pro Max",
+    "iPhone 14", "iPhone 14 Plus", "iPhone 14 Pro", "iPhone 14 Pro Max",
+    "iPhone 15", "iPhone 15 Plus", "iPhone 15 Pro", "iPhone 15 Pro Max",
+    "iPhone 16", "iPhone 16 Plus", "iPhone 16 Pro", "iPhone 16 Pro Max",
+    "iPhone 17", "iPhone 17 Air", "iPhone 17 Pro", "iPhone 17 Pro Max",
+)
+ROTATING_SEARCH_PHRASES = (
+    "bad battery", "cracked back", "cracked screen", "bad LCD", "bad OLED",
+    "Face ID issue", "charging issue", "powers on", "fully functional except",
+    "read description", "parts or repair", "for repair",
+)
+
+
+def _rotating_system_searches(*, now: datetime | None = None, count: int = 4) -> list[str]:
+    current = now or datetime.now(timezone.utc)
+    slot = int(current.timestamp() // max(300, settings.background_poll_seconds))
+    searches = []
+    for offset in range(max(1, count)):
+        model = ROTATING_SEARCH_MODELS[(slot * count + offset) % len(ROTATING_SEARCH_MODELS)]
+        phrase = ROTATING_SEARCH_PHRASES[(slot + offset * 3) % len(ROTATING_SEARCH_PHRASES)]
+        searches.append(f"{model} {phrase}")
+    return searches
 
 
 def _empty_scan_summary(
@@ -1720,14 +2239,52 @@ def _usage_weight(*, search_signatures_subscribed: int, items_scored: int, alert
 
 
 def _public_notification_settings(data: dict[str, Any]) -> dict[str, Any]:
+    attempts = storage.list_notification_attempts(user_id=int(data["user_id"]), limit=20)
+    last_delivery = next((entry for entry in attempts if entry.get("attempted")), None)
     return {
         "user_id": data["user_id"],
         "discord_enabled": bool(data.get("discord_enabled")),
+        "push_enabled": bool(data.get("push_enabled", True)),
+        "use_global_discord_webhook": bool(data.get("use_global_discord_webhook")),
         "alerts_enabled": bool(data.get("alerts_enabled")),
         "notify_best_finds": bool(data.get("notify_best_finds")),
         "notify_priority_review": bool(data.get("notify_priority_review")),
+        "send_gem_immediately": bool(data.get("send_gem_immediately", True)),
+        "send_profitable_immediately": bool(data.get("send_profitable_immediately", True)),
+        "review_delivery_mode": str(data.get("review_delivery_mode") or "immediate"),
+        "max_review_alerts_per_hour": int(data.get("max_review_alerts_per_hour", 2) or 0),
+        "duplicate_suppression_hours": int(data.get("duplicate_suppression_hours", 72) or 72),
+        "meaningful_price_drop_amount": float(data.get("meaningful_price_drop_amount", 20) or 0),
+        "meaningful_price_drop_percent": float(data.get("meaningful_price_drop_percent", 0.05) or 0),
+        "meaningful_profit_increase_amount": float(data.get("meaningful_profit_increase_amount", 25) or 0),
+        "meaningful_profit_increase_percent": float(data.get("meaningful_profit_increase_percent", 0.15) or 0),
+        "meaningful_roi_increase": float(data.get("meaningful_roi_increase", 0.10) or 0),
+        "catchup_enabled": bool(data.get("catchup_enabled", True)),
+        "catchup_batch_size": int(data.get("catchup_batch_size", 5) or 5),
+        "catchup_include_review": bool(data.get("catchup_include_review", False)),
+        "gem_min_expected_profit": float(data.get("gem_min_expected_profit", 75) or 0),
+        "profitable_min_expected_profit": float(data.get("profitable_min_expected_profit", 50) or 0),
+        "review_min_expected_profit": float(data.get("review_min_expected_profit", 25) or 0),
+        "review_min_upside_profit": float(data.get("review_min_upside_profit", 60) or 0),
+        "gem_min_roi": float(data.get("gem_min_roi", 0.25) or 0),
+        "profitable_min_roi": float(data.get("profitable_min_roi", 0.15) or 0),
+        "review_min_roi": float(data.get("review_min_roi", 0.05) or 0),
+        "max_listing_age_minutes": int(data.get("max_listing_age_minutes", 360) or 360),
         "discord_webhook": "",
         "discord_webhook_configured": bool(data.get("discord_webhook_configured")),
+        "global_discord_webhook_configured": bool(data.get("global_discord_webhook_configured")),
+        "webhook_configured": bool(data.get("webhook_configured")),
+        "webhook_source": data.get("webhook_source"),
+        "notification_ready": bool(data.get("notification_ready")),
+        "notification_block_reason": data.get("notification_block_reason"),
+        "push_configured": bool(data.get("push_configured")),
+        "push_ready": bool(data.get("push_ready")),
+        "active_push_subscriptions": int(data.get("active_push_subscriptions") or 0),
+        "last_delivery_failed": bool(last_delivery and last_delivery.get("failed")),
+        "last_delivery_failure_category": (
+            str(last_delivery.get("failure_category") or "") if last_delivery and last_delivery.get("failed") else None
+        ),
+        "last_delivery_at": last_delivery.get("created_at") if last_delivery else None,
         "created_at": data.get("created_at"),
         "updated_at": data.get("updated_at"),
     }
@@ -1854,7 +2411,10 @@ def _bootstrap_admin_if_configured() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _bootstrap_admin_if_configured()
+    if settings.process_role in {"api", "combined"}:
+        _bootstrap_admin_if_configured()
+        if settings.runtime_env == "production" and not storage.any_admin_exists():
+            raise RuntimeError("Production API cannot serve without an admin; check ADMIN_EMAIL and ADMIN_PASSWORD")
     _warn_if_hosted_without_encryption()
     task = _start_background_poll_loop()
     try:
@@ -1864,7 +2424,7 @@ async def lifespan(app: FastAPI):
 
 
 def _should_start_background_poll_loop() -> bool:
-    return bool(settings.background_poll_enabled)
+    return bool(settings.background_poll_enabled and settings.process_role in {"scanner", "combined"})
 
 
 def _configured_worker_count() -> int | None:
@@ -1892,7 +2452,8 @@ def _warn_if_background_poll_may_duplicate_across_workers() -> None:
 
 
 def _start_background_poll_loop() -> asyncio.Task | None:
-    global _background_poll_task
+    global _background_poll_stopping, _background_poll_task
+    _background_poll_stopping = False
     logger.info(
         "Background poll startup check pid=%s hostname=%s auth_required=%s background_poll_enabled=%s poll_seconds=%s",
         _process_id(),
@@ -1919,26 +2480,9 @@ def _start_background_poll_loop() -> asyncio.Task | None:
             _hostname(),
         )
         return _background_poll_task
-    external_heartbeat = _fresh_external_background_worker_heartbeat()
-    if external_heartbeat:
-        polling_status.task_not_started()
-        polling_status.duplicate_start_prevented()
-        logger.warning(
-            "Background poll loop not started because another worker heartbeat is fresh "
-            "pid=%s hostname=%s other_pid=%s other_hostname=%s other_status=%s "
-            "other_last_seen_at=%s heartbeat_age_seconds=%.1f stale_after_seconds=%s",
-            _process_id(),
-            _hostname(),
-            external_heartbeat.get("process_id"),
-            external_heartbeat.get("hostname"),
-            external_heartbeat.get("status"),
-            external_heartbeat.get("last_seen_at"),
-            float(external_heartbeat.get("_age_seconds") or 0),
-            external_heartbeat.get("_stale_after_seconds"),
-        )
-        return None
     _warn_if_background_poll_may_duplicate_across_workers()
     _background_poll_task = asyncio.create_task(_background_poll())
+    _background_poll_task.add_done_callback(_on_background_poll_done)
     polling_status.task_started()
     logger.info(
         "Started background poll loop pid=%s hostname=%s auth_required=%s background_poll_enabled=%s poll_seconds=%s",
@@ -1951,8 +2495,30 @@ def _start_background_poll_loop() -> asyncio.Task | None:
     return _background_poll_task
 
 
+def _on_background_poll_done(task: asyncio.Task) -> None:
+    global _background_supervisor_task
+    if _background_poll_stopping or task.cancelled():
+        return
+    error = task.exception()
+    logger.error("Background poll task exited unexpectedly worker_id=%s error=%r", WORKER_ID, error)
+
+    async def restart() -> None:
+        global _background_poll_task
+        await asyncio.sleep(5)
+        if _background_poll_stopping or _background_poll_task is not task:
+            return
+        _background_poll_task = None
+        _start_background_poll_loop()
+
+    _background_supervisor_task = asyncio.create_task(restart())
+
+
 async def _stop_background_poll_loop(task: asyncio.Task | None) -> None:
-    global _background_poll_task
+    global _background_poll_stopping, _background_poll_task, _background_supervisor_task
+    _background_poll_stopping = True
+    if _background_supervisor_task and not _background_supervisor_task.done():
+        _background_supervisor_task.cancel()
+    _background_supervisor_task = None
     if not task:
         return
     task.cancel()
@@ -1962,6 +2528,7 @@ async def _stop_background_poll_loop(task: asyncio.Task | None) -> None:
         pass
     if _background_poll_task is task:
         _background_poll_task = None
+    storage.release_worker_lease(BACKGROUND_LEASE_NAME, WORKER_ID)
     if _background_worker_started_at:
         storage.update_worker_heartbeat(
             worker_name="background_poll",
@@ -1980,15 +2547,51 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+if settings.trusted_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.trusted_hosts)
+
+
+@app.get("/health/live")
+def health_live() -> dict[str, bool]:
+    return {"ok": True}
+
+
+@app.get("/health/ready")
+def health_ready() -> dict[str, bool]:
+    try:
+        if settings.runtime_env == "production":
+            from .schema import check_schema
+            check_schema(storage.engine)
+        else:
+            with storage.connect() as connection:
+                connection.execute("SELECT 1")
+    except Exception:
+        logger.exception("API readiness database check failed")
+        raise HTTPException(status_code=503, detail="Database or schema unavailable") from None
+    return {"ok": True}
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    snapshot = polling_status.snapshot()
+    scan_started_at = snapshot.get("last_cycle_started_at") if snapshot.get("cycle_running") else None
+    scan_started_dt = _parse_utc_datetime(str(scan_started_at or ""))
+    scan_duration_seconds = (
+        int((datetime.now(timezone.utc) - scan_started_dt).total_seconds())
+        if scan_started_dt else None
+    )
     return {
         "ok": True,
+        "api_responsive": True,
         "ebay_configured": settings.ebay_configured,
         "discord_configured": settings.discord_configured,
+        "global_discord_webhook_configured": settings.discord_configured,
+        "notification_ready": None,
+        "notification_block_reason": "authenticated_user_context_required" if settings.auth_required else None,
         "auth_required": settings.auth_required,
+        "state": "scanning" if snapshot.get("cycle_running") else "ready",
+        "scan_started_at": scan_started_at,
+        "scan_duration_seconds": scan_duration_seconds,
     }
 
 
@@ -2175,7 +2778,10 @@ def _trace_replay_user(requested_user_id: int | None, admin_user: dict[str, Any]
         if not admin_user:
             raise HTTPException(status_code=401, detail="Authentication required")
         return admin_user
-    return _local_settings_user()
+    user = storage.get_local_settings_user()
+    if not user:
+        raise HTTPException(status_code=404, detail="Replay user not found")
+    return user
 
 
 def _source_cycle_replay_item_ids(cycle_id: int | None) -> set[str]:
@@ -2334,8 +2940,15 @@ def replay_listing_decision_traces(
     *,
     admin_user: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    write_mode = bool(request.write_traces and not request.dry_run)
+    if not request.dry_run and not request.write_traces:
+        raise HTTPException(status_code=400, detail="Write mode requires write_traces=true")
+    if write_mode and (not admin_user or admin_user.get("role") != "admin"):
+        raise HTTPException(status_code=403, detail="Authenticated admin required for replay writes")
     user = _trace_replay_user(request.user_id, admin_user)
-    resolved = _resolve_effective_user_settings(user)
+    resolved = _resolve_effective_user_settings(
+        user, allow_local_fallback=False, ensure_defaults=False, migrate_plaintext_webhook=False,
+    )
     if not resolved.user:
         raise HTTPException(status_code=400, detail="No effective user is available for trace replay")
     user_id = int(resolved.user["id"])
@@ -2348,15 +2961,17 @@ def replay_listing_decision_traces(
         **resolved.freshness_kwargs(),
     )
     items = _filter_replay_items(raw_items, request, source_item_ids=source_item_ids)
-    cycle_id = _create_scan_cycle(
-        mode="trace_replay",
-        user_id=user_id,
-        current_settings=resolved,
-        users_considered=1,
-        users_scanned=1,
-        keywords_searched=resolved.keywords,
-        sources_checked=["stored_marketplace_items", "user_item_states"],
-    )
+    cycle_id = None
+    if not request.dry_run:
+        cycle_id = _create_scan_cycle(
+            mode="trace_replay",
+            user_id=user_id,
+            current_settings=resolved,
+            users_considered=1,
+            users_scanned=1,
+            keywords_searched=resolved.keywords,
+            sources_checked=["stored_marketplace_items", "user_item_states"],
+        )
     counters = ScanCycleCounters()
     pricing_context = _build_user_pricing_context(user_id)
     generated_traces: list[dict[str, Any]] = []
@@ -2407,17 +3022,18 @@ def replay_listing_decision_traces(
             counters.record_trace(trace)
             generated_traces.append(trace)
     except Exception as exc:
-        _finish_scan_cycle_from_summary(
-            cycle_id,
-            status="failed",
-            summary={"scanned": len(items), "keywords": resolved.keywords},
-            counters=counters,
-            error_message=_scan_cycle_error_message(exc),
-            users_considered=1,
-            users_scanned=1,
-            keywords_searched=resolved.keywords,
-            sources_checked=["stored_marketplace_items", "user_item_states"],
-        )
+        if cycle_id is not None:
+            _finish_scan_cycle_from_summary(
+                cycle_id,
+                status="failed",
+                summary={"scanned": len(items), "keywords": resolved.keywords},
+                counters=counters,
+                error_message=_scan_cycle_error_message(exc),
+                users_considered=1,
+                users_scanned=1,
+                keywords_searched=resolved.keywords,
+                sources_checked=["stored_marketplace_items", "user_item_states"],
+            )
         raise
 
     summary = {
@@ -2428,17 +3044,20 @@ def replay_listing_decision_traces(
         "alerts_sent": 0,
         "keywords": resolved.keywords,
     }
-    _finish_scan_cycle_from_summary(
-        cycle_id,
-        status="completed",
-        summary=summary,
-        counters=counters,
-        users_considered=1,
-        users_scanned=1,
-        keywords_searched=resolved.keywords,
-        sources_checked=["stored_marketplace_items", "user_item_states"],
-    )
-    cycle = storage.get_scan_cycle(cycle_id) or {"id": cycle_id, "cycle_id": cycle_id}
+    if cycle_id is not None:
+        _finish_scan_cycle_from_summary(
+            cycle_id,
+            status="completed",
+            summary=summary,
+            counters=counters,
+            users_considered=1,
+            users_scanned=1,
+            keywords_searched=resolved.keywords,
+            sources_checked=["stored_marketplace_items", "user_item_states"],
+        )
+        cycle = storage.get_scan_cycle(cycle_id) or {"id": cycle_id, "cycle_id": cycle_id}
+    else:
+        cycle = {"id": None, "cycle_id": None, "mode": "trace_replay", "status": "dry_run", **summary}
     return {
         "cycle": cycle,
         "scan_cycle_id": cycle_id,
@@ -2870,10 +3489,405 @@ def admin_worker_status(admin_user: Optional[dict[str, Any]] = Depends(require_a
     return {"workers": storage.get_worker_heartbeats(), "polling_status": polling_status.snapshot()}
 
 
-@app.get("/admin/polling/status")
-def admin_polling_status(admin_user: Optional[dict[str, Any]] = Depends(require_admin_user_if_auth_enabled)) -> dict[str, Any]:
+@app.get("/admin/storage/status")
+def admin_storage_status(admin_user: Optional[dict[str, Any]] = Depends(require_admin_user_if_auth_enabled)) -> dict[str, Any]:
     del admin_user
-    return polling_status.snapshot()
+    return storage.storage_metrics()
+
+
+@app.get("/admin/polling/status")
+def admin_polling_status(status_user: dict[str, Any] = Depends(require_polling_status_user)) -> dict[str, Any]:
+    snapshot = polling_status.snapshot()
+    now = datetime.now(timezone.utc)
+    global_lease = storage.get_worker_lease(GLOBAL_SCAN_LEASE_NAME)
+    global_expiry = _parse_utc_datetime(str((global_lease or {}).get("expires_at") or ""))
+    global_active = bool(global_lease and global_expiry and global_expiry > now)
+    global_owner = bool(
+        global_active
+        and str((global_lease or {}).get("worker_id") or "").startswith(f"{WORKER_ID}:scan:")
+        and int((global_lease or {}).get("process_id") or 0) == _process_id()
+    )
+    if global_owner:
+        interval = resolve_poll_interval(configured=settings.background_poll_seconds)
+        lease = storage.get_worker_lease(BACKGROUND_LEASE_NAME)
+        heartbeat = next((row for row in storage.get_worker_heartbeats() if row.get("worker_name") == "background_poll"), None)
+        last_heartbeat = (lease or {}).get("heartbeat_at") or (heartbeat or {}).get("last_seen_at")
+        heartbeat_dt = _parse_utc_datetime(str(last_heartbeat or ""))
+        heartbeat_age = (now - heartbeat_dt).total_seconds() if heartbeat_dt else None
+        scan_started_at = snapshot.get("last_cycle_started_at") or (global_lease or {}).get("acquired_at")
+        scan_started_dt = _parse_utc_datetime(str(scan_started_at or ""))
+        scan_duration_seconds = int((now - scan_started_dt).total_seconds()) if scan_started_dt else None
+        return {
+            **snapshot,
+            "enabled": bool(settings.background_poll_enabled),
+            "api_responsive": True,
+            "disabled_reason": None,
+            "state": "scanning",
+            "reason": "Autoscan scan is in progress",
+            "scan_started_at": scan_started_at,
+            "scan_duration_seconds": scan_duration_seconds,
+            "scheduler_process_state": "running",
+            "worker_lease_state": "owned" if _is_current_background_leader(lease, now) else "active",
+            "scheduler_leadership_ttl_seconds": BACKGROUND_LEASE_TTL_SECONDS,
+            "scheduler_leadership_renew_seconds": BACKGROUND_LEASE_RENEW_SECONDS,
+            "scheduler_leadership_acquired_at": _background_leadership_acquired_at,
+            "scheduler_leadership_lost_at": _background_leadership_lost_at,
+            "scheduler_lease": {
+                key: (lease or {}).get(key)
+                for key in ("worker_id", "hostname", "process_id", "acquired_at", "heartbeat_at", "expires_at", "previous_worker_id", "takeover_reason")
+            } if lease else None,
+            "scheduler_lease_owner_state": "live_notifierr",
+            "scheduler_lease_owner_reason": "lease belongs to this Notifierr process",
+            "scheduler_lease_owner_alive": True,
+            "scheduler_lease_heartbeat_age_seconds": int(heartbeat_age) if heartbeat_age is not None else None,
+            "global_scan_lease_state": "owned",
+            "global_scan_lease": {
+                key: (global_lease or {}).get(key)
+                for key in ("worker_id", "hostname", "process_id", "acquired_at", "heartbeat_at", "expires_at", "previous_worker_id", "takeover_reason")
+            },
+            "global_scan_owner_state": "live_notifierr",
+            "is_leader": _is_current_background_leader(lease, now),
+            "worker_id": (lease or {}).get("worker_id"),
+            "configured_interval_seconds": interval.configured_seconds,
+            "effective_interval_seconds": interval.effective_seconds,
+            "last_heartbeat_at": last_heartbeat,
+            "last_background_started_at": scan_started_at,
+            "last_background_attempt_status": "started",
+            "last_background_attempt_cycle_id": (heartbeat or {}).get("last_cycle_id"),
+            "last_background_succeeded_at": None,
+            "last_background_cycle_id": None,
+            "last_manual_succeeded_at": None,
+            "next_scheduled_at": None,
+            "current_cycle_id": (heartbeat or {}).get("last_cycle_id"),
+            "consecutive_failures": 0,
+            "consecutive_failed_cycles": 0,
+            "consecutive_skipped_cycles": 0,
+            "last_skip_reason": None,
+            "last_success_age_seconds": None,
+            "last_success_overdue_after_seconds": scan_success_overdue_after_seconds(interval.effective_seconds, None),
+            "orphaned_lease_blocking_work": False,
+            "abandoned_active_cycle": None,
+            "stale": False,
+            "stale_after_seconds": stale_after_seconds(interval.effective_seconds),
+        }
+    resolved = _polling_settings_for_status(status_user if settings.auth_required else None)
+    persisted_interval = getattr(resolved, "background_poll_seconds", None)
+    interval = resolve_poll_interval(
+        configured=settings.background_poll_seconds,
+        persisted=[persisted_interval] if persisted_interval is not None else None,
+    )
+    effective = interval.effective_seconds
+    lease = storage.get_worker_lease(BACKGROUND_LEASE_NAME)
+    heartbeats = storage.get_worker_heartbeats()
+    heartbeat = next((row for row in heartbeats if row.get("worker_name") == "background_poll"), None)
+    last_heartbeat = (lease or {}).get("heartbeat_at") or (heartbeat or {}).get("last_seen_at")
+    heartbeat_dt = _parse_utc_datetime(str(last_heartbeat or ""))
+    stale_after = stale_after_seconds(effective)
+    heartbeat_age = (now - heartbeat_dt).total_seconds() if heartbeat_dt else None
+    lease_expiry_dt = _parse_utc_datetime(str((lease or {}).get("expires_at") or ""))
+    lease_active = bool(lease and lease_expiry_dt and lease_expiry_dt > now)
+    lease_owner = _is_current_background_leader(lease, now)
+    scheduler_owner_state = None if lease_owner else (_background_lease_owner_state(lease) if lease_active else None)
+    scheduler_owner_state_name = "live_notifierr" if lease_owner else (scheduler_owner_state.state if scheduler_owner_state else None)
+    scheduler_owner_reason = "lease belongs to this Notifierr process" if lease_owner else (
+        scheduler_owner_state.reason if scheduler_owner_state else None
+    )
+    scheduler_owner_alive = True if lease_owner else (
+        scheduler_owner_state.pid_exists if scheduler_owner_state and scheduler_owner_state.pid_exists is not None else None
+    )
+    scheduler_leadership_blocked = bool(lease_active and not lease_owner and scheduler_owner_state_name == "absent")
+    scheduler_standby = bool(
+        lease_active
+        and not lease_owner
+        and scheduler_owner_state_name in {"live_notifierr", "live_unknown", "remote_unknown", "unknown", "identity_unknown", "live_unrelated"}
+    )
+    scheduler_alive = bool(
+        heartbeat_dt
+        and heartbeat_age is not None
+        and heartbeat_age <= stale_after
+        and not scheduler_leadership_blocked
+    )
+    stale = bool(settings.background_poll_enabled and not scheduler_alive)
+
+    global_owner_state = inspect_lease_owner(
+        global_lease,
+        local_hostname=_hostname(),
+        current_worker_id=WORKER_ID,
+        current_process_id=_process_id(),
+    ) if global_active else None
+    global_heartbeat = _parse_utc_datetime(str((global_lease or {}).get("heartbeat_at") or ""))
+    global_heartbeat_age = (now - global_heartbeat).total_seconds() if global_heartbeat else None
+    orphaned_lease = bool(global_active and global_owner_state and global_owner_state.state == "absent")
+    stale_global_lease = bool(
+        global_active
+        and global_heartbeat_age is not None
+        and global_heartbeat_age > (GLOBAL_SCAN_LEASE_RENEW_SECONDS * 2)
+    )
+    scan_started_at = snapshot.get("last_cycle_started_at") if snapshot.get("cycle_running") else (
+        (global_lease or {}).get("acquired_at") if global_active else None
+    )
+    scan_started_dt = _parse_utc_datetime(str(scan_started_at or ""))
+    scan_duration_seconds = int((now - scan_started_dt).total_seconds()) if scan_started_dt else None
+    if (
+        settings.background_poll_enabled
+        and resolved.background_poll_enabled
+        and global_active
+        and (global_owner or (global_owner_state and global_owner_state.state in {"live_notifierr", "remote_unknown"}))
+        and not stale_global_lease
+    ):
+        return {
+            **snapshot,
+            "enabled": True,
+            "api_responsive": True,
+            "disabled_reason": None,
+            "state": "scanning",
+            "reason": "Autoscan scan is in progress",
+            "scan_started_at": scan_started_at,
+            "scan_duration_seconds": scan_duration_seconds,
+            "scheduler_process_state": "running" if lease_owner else ("standby" if scheduler_standby else "stopped"),
+            "worker_lease_state": (
+                "owned" if lease_owner else
+                "orphaned" if scheduler_leadership_blocked else
+                "active" if lease_active else
+                "expired_or_absent"
+            ),
+            "scheduler_leadership_ttl_seconds": BACKGROUND_LEASE_TTL_SECONDS,
+            "scheduler_leadership_renew_seconds": BACKGROUND_LEASE_RENEW_SECONDS,
+            "scheduler_leadership_acquired_at": _background_leadership_acquired_at,
+            "scheduler_leadership_lost_at": _background_leadership_lost_at,
+            "scheduler_lease": {
+                key: (lease or {}).get(key)
+                for key in ("worker_id", "hostname", "process_id", "acquired_at", "heartbeat_at", "expires_at", "previous_worker_id", "takeover_reason")
+            } if lease else None,
+            "scheduler_lease_owner_state": scheduler_owner_state_name,
+            "scheduler_lease_owner_reason": scheduler_owner_reason,
+            "scheduler_lease_owner_alive": scheduler_owner_alive,
+            "scheduler_lease_heartbeat_age_seconds": int(heartbeat_age) if heartbeat_age is not None else None,
+            "global_scan_lease_state": "owned" if global_owner else "active",
+            "global_scan_lease": {
+                key: (global_lease or {}).get(key)
+                for key in ("worker_id", "hostname", "process_id", "acquired_at", "heartbeat_at", "expires_at", "previous_worker_id", "takeover_reason")
+            },
+            "global_scan_owner_state": global_owner_state.state if global_owner_state else None,
+            "is_leader": lease_owner,
+            "worker_id": (lease or {}).get("worker_id"),
+            "configured_interval_seconds": interval.configured_seconds,
+            "effective_interval_seconds": effective,
+            "last_heartbeat_at": last_heartbeat,
+            "last_background_started_at": scan_started_at,
+            "last_background_attempt_status": "started",
+            "last_background_attempt_cycle_id": (heartbeat or {}).get("last_cycle_id"),
+            "last_background_succeeded_at": None,
+            "last_background_cycle_id": None,
+            "last_manual_succeeded_at": None,
+            "next_scheduled_at": None,
+            "current_cycle_id": (heartbeat or {}).get("last_cycle_id"),
+            "consecutive_failures": 0,
+            "consecutive_failed_cycles": 0,
+            "consecutive_skipped_cycles": 0,
+            "last_skip_reason": None,
+            "last_success_age_seconds": None,
+            "last_success_overdue_after_seconds": scan_success_overdue_after_seconds(effective, None),
+            "orphaned_lease_blocking_work": False,
+            "abandoned_active_cycle": None,
+            "stale": stale,
+            "stale_after_seconds": stale_after,
+        }
+    status_cache_key = int((status_user or {}).get("id") or 0)
+    cached_status = _polling_status_cache.get(status_cache_key)
+    cache_now = monotonic_time.perf_counter()
+    if status_cache_key > 0 and cached_status and cache_now - cached_status[0] <= _POLLING_STATUS_CACHE_SECONDS:
+        return copy.deepcopy(cached_status[1])
+    background_modes = ["local_background", "shared_background"]
+    recent_background = storage.recent_scan_cycles_for_modes(background_modes, limit=100)
+    latest_background = recent_background[0] if recent_background else None
+    successful_background = storage.latest_successful_scan_cycle_for_modes(background_modes)
+    successful_manual = storage.latest_scan_cycle_for_modes(["manual"], status="completed")
+    consecutive_failures, consecutive_skips, last_skip_reason = consecutive_cycle_outcomes(recent_background)
+    success_finished = _parse_utc_datetime(str((successful_background or {}).get("finished_at") or ""))
+    success_age_seconds = (now - success_finished).total_seconds() if success_finished else None
+    overdue_after = scan_success_overdue_after_seconds(effective, successful_background)
+    reference_started = _parse_utc_datetime(str((heartbeat or {}).get("started_at") or ""))
+    overdue = bool(
+        (success_age_seconds is not None and success_age_seconds > overdue_after)
+        or (success_age_seconds is None and reference_started and (now - reference_started).total_seconds() > overdue_after)
+    )
+    outside_window = bool(settings.background_poll_enabled and not _background_poll_is_active(resolved, now=now))
+    repeated_lock_skips = consecutive_skips >= 2 and last_skip_reason == "scan_already_running"
+    orphan_blocking = bool(orphaned_lease or (global_active and stale_global_lease and repeated_lock_skips))
+    if not settings.background_poll_enabled or not resolved.background_poll_enabled:
+        state = "disabled"
+        reason = "Autoscan is intentionally disabled"
+    elif scheduler_leadership_blocked:
+        state = "blocked"
+        reason = f"Autoscan scheduler leadership blocked by dead worker PID {int((lease or {}).get('process_id') or 0)}"
+    elif not scheduler_alive:
+        state = "stopped"
+        reason = "Autoscan scheduler heartbeat is missing or stale"
+    elif outside_window:
+        state = "outside_window"
+        reason = "Autoscan is paused outside configured active hours"
+    elif orphan_blocking:
+        state = "blocked"
+        owner_pid = int((global_lease or {}).get("process_id") or 0)
+        reason = f"Autoscan blocked by abandoned scan lease from dead worker PID {owner_pid}"
+    elif global_active and global_owner_state and global_owner_state.state in {"live_notifierr", "remote_unknown"} and not stale_global_lease:
+        state = "scanning"
+        reason = "Autoscan scan is in progress"
+    elif scheduler_standby:
+        state = "standby"
+        reason = "Autoscan scheduler leader is another process"
+    elif overdue or consecutive_failures > 0 or consecutive_skips >= 2:
+        state = "degraded"
+        if overdue:
+            reason = "Autoscan scheduler is alive but the last successful scan is overdue"
+        elif consecutive_failures:
+            reason = f"Autoscan has {consecutive_failures} consecutive failed cycle(s)"
+        else:
+            reason = f"Autoscan has {consecutive_skips} consecutive skipped cycle(s): {last_skip_reason or 'unknown'}"
+    else:
+        state = "running"
+        reason = "Autoscan scheduler is healthy"
+    unfinished = storage.list_unfinished_scan_cycles(limit=20)
+    payload = {
+        **snapshot,
+        "enabled": bool(settings.background_poll_enabled),
+        "api_responsive": True,
+        "disabled_reason": None if state != "disabled" else reason,
+        "state": state,
+        "reason": reason,
+        "scan_started_at": scan_started_at,
+        "scan_duration_seconds": scan_duration_seconds,
+        "scheduler_process_state": "running" if lease_owner else ("standby" if scheduler_standby else "stopped"),
+        "worker_lease_state": (
+            "owned" if lease_owner else
+            "orphaned" if scheduler_leadership_blocked else
+            "active" if lease_active else
+            "expired_or_absent"
+        ),
+        "scheduler_leadership_ttl_seconds": BACKGROUND_LEASE_TTL_SECONDS,
+        "scheduler_leadership_renew_seconds": BACKGROUND_LEASE_RENEW_SECONDS,
+        "scheduler_leadership_acquired_at": _background_leadership_acquired_at,
+        "scheduler_leadership_lost_at": _background_leadership_lost_at,
+        "scheduler_leadership_acquired_age_seconds": (
+            int((now - _parse_utc_datetime(_background_leadership_acquired_at)).total_seconds())
+            if _background_leadership_acquired_at and _parse_utc_datetime(_background_leadership_acquired_at)
+            else None
+        ),
+        "scheduler_leadership_lost_age_seconds": (
+            int((now - _parse_utc_datetime(_background_leadership_lost_at)).total_seconds())
+            if _background_leadership_lost_at and _parse_utc_datetime(_background_leadership_lost_at)
+            else None
+        ),
+        "scheduler_lease": {
+            key: (lease or {}).get(key)
+            for key in ("worker_id", "hostname", "process_id", "acquired_at", "heartbeat_at", "expires_at", "previous_worker_id", "takeover_reason")
+        } if lease else None,
+        "scheduler_lease_owner_state": scheduler_owner_state_name,
+        "scheduler_lease_owner_reason": scheduler_owner_reason,
+        "scheduler_lease_owner_alive": scheduler_owner_alive,
+        "scheduler_lease_heartbeat_age_seconds": int(heartbeat_age) if heartbeat_age is not None else None,
+        "global_scan_lease_state": (
+            "owned" if global_owner else
+            "orphaned" if orphaned_lease else
+            "stale" if stale_global_lease else
+            "active" if global_active else
+            "expired" if global_lease else
+            "absent"
+        ),
+        "is_leader": lease_owner,
+        "worker_id": (lease or {}).get("worker_id"),
+        "configured_interval_seconds": interval.configured_seconds,
+        "effective_interval_seconds": effective,
+        "last_heartbeat_at": last_heartbeat,
+        "last_background_started_at": (latest_background or {}).get("started_at"),
+        "last_background_attempt_status": (latest_background or {}).get("status"),
+        "last_background_attempt_cycle_id": (latest_background or {}).get("id"),
+        "last_background_succeeded_at": (successful_background or {}).get("finished_at"),
+        "last_background_cycle_id": (successful_background or {}).get("id"),
+        "last_manual_succeeded_at": (successful_manual or {}).get("finished_at"),
+        "next_scheduled_at": (heartbeat or {}).get("next_wake_at"),
+        "current_cycle_id": (heartbeat or {}).get("last_cycle_id"),
+        "consecutive_failures": consecutive_failures,
+        "consecutive_failed_cycles": consecutive_failures,
+        "consecutive_skipped_cycles": consecutive_skips,
+        "last_skip_reason": last_skip_reason,
+        "last_success_age_seconds": int(success_age_seconds) if success_age_seconds is not None else None,
+        "last_success_overdue_after_seconds": overdue_after,
+        "orphaned_lease_blocking_work": orphan_blocking,
+        "abandoned_active_cycle": next((row for row in unfinished if row.get("status") == "started"), None),
+        "global_scan_lease": {
+            key: (global_lease or {}).get(key)
+            for key in ("worker_id", "hostname", "process_id", "acquired_at", "heartbeat_at", "expires_at", "previous_worker_id", "takeover_reason")
+        } if global_lease else None,
+        "global_scan_owner_state": global_owner_state.state if global_owner_state else None,
+        "stale": stale,
+        "stale_after_seconds": stale_after,
+    }
+    if status_cache_key > 0:
+        _polling_status_cache[status_cache_key] = (cache_now, copy.deepcopy(payload))
+    return payload
+
+
+@app.get("/admin/scanner/status")
+def admin_scanner_status(status_user: dict[str, Any] = Depends(require_polling_status_user)) -> dict[str, Any]:
+    """Durable scanner view; an API process heartbeat never counts as scan success."""
+    status = admin_polling_status(status_user)
+    source = _ebay_source_status()
+    modes = ["local_background", "shared_background"]
+    latest = storage.latest_scan_cycle_for_modes(modes)
+    successful = storage.latest_successful_scan_cycle_for_modes(modes)
+    failures, skips, _ = consecutive_cycle_outcomes(storage.recent_scan_cycles_for_modes(modes, limit=100))
+    effective = _polling_settings_for_status(status_user if settings.auth_required else None)
+    now = datetime.now(timezone.utc)
+    success_at = _parse_utc_datetime(str((successful or {}).get("finished_at") or ""))
+    success_age = int((now - success_at).total_seconds()) if success_at else None
+    cadence = int(status.get("effective_interval_seconds") or resolve_poll_interval(configured=settings.background_poll_seconds).effective_seconds)
+    overdue_after = scan_success_overdue_after_seconds(cadence, successful)
+    worker_started = _parse_utc_datetime(str((status.get("scheduler_lease") or {}).get("acquired_at") or ""))
+    useful_overdue = bool(
+        (success_age is not None and success_age > overdue_after)
+        or (success_age is None and worker_started and (now - worker_started).total_seconds() > overdue_after)
+    )
+    with storage.connect() as connection:
+        retention_row = connection.execute(
+            "SELECT status, started_at, finished_at FROM retention_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    result = {
+        "state": status["state"],
+        "degraded_reason": status.get("reason") if status["state"] in {"blocked", "degraded", "stopped"} else None,
+        "enabled": status["enabled"],
+        "lease": status.get("scheduler_lease"),
+        "lease_state": status.get("worker_lease_state"),
+        "last_heartbeat_at": status.get("last_heartbeat_at"),
+        "last_attempt_at": (latest or {}).get("started_at"),
+        "last_useful_scan_at": (successful or {}).get("finished_at"),
+        "last_useful_scan_age_seconds": success_age,
+        "useful_scan_overdue_after_seconds": overdue_after,
+        "effective_interval_seconds": cadence,
+        "active_window": {
+            "start": effective.background_poll_active_start,
+            "end": effective.background_poll_active_end,
+            "timezone": effective.background_poll_timezone,
+        },
+        "consecutive_failures": failures,
+        "consecutive_skips": skips,
+        "next_expected_scan_at": status.get("next_scheduled_at"),
+        "source": {key: source.get(key) for key in ("status", "cooldown_until", "last_success_at", "last_failure_at", "last_http_status", "last_error_category")},
+        "latest_items_discovered": (latest or {}).get("new_items_found"),
+        "latest_items_scored": (latest or {}).get("items_scored"),
+        "retention": dict(retention_row) if retention_row else None,
+    }
+    if result["state"] == "standby" and status.get("scheduler_process_state") == "standby":
+        # API observers are never lease owners; a live remote leader is running.
+        result["state"] = "running"
+    if source["status"] == "cooling_down" and result["state"] not in {"disabled", "outside_window"}:
+        result["state"] = "blocked"
+        result["degraded_reason"] = "Marketplace source is cooling down"
+    elif useful_overdue and result["state"] not in {"disabled", "outside_window", "blocked", "stopped"}:
+        result["state"] = "degraded"
+        result["degraded_reason"] = "Last useful scan is overdue"
+    return result
 
 
 @app.post("/admin/notifications/test")
@@ -2889,25 +3903,7 @@ async def admin_test_notification(
             allow_local_fallback=True,
             ensure_defaults=True,
         )
-    webhook_url = resolved.resolved_discord_webhook_url
-    attempted = bool(webhook_url)
-    sent = False
-    error = ""
-    if not attempted:
-        return {"attempted": False, "sent": False, "failed": False, "error": "Discord webhook is not configured"}
-    polling_status.notification_attempted()
-    try:
-        sent = await DiscordNotifier(webhook_url).send_message("Notifierr test notification")
-    except Exception as exc:
-        logger.exception("Admin test notification failed")
-        polling_status.notification_failed()
-        return {"attempted": True, "sent": False, "failed": True, "error": f"{type(exc).__name__}: {exc}"}
-    if sent:
-        polling_status.notification_sent()
-    else:
-        polling_status.notification_failed()
-        error = "Notification provider returned failure"
-    return {"attempted": True, "sent": bool(sent), "failed": not bool(sent), "error": error}
+    return await _send_test_notification(resolved)
 
 
 @app.get("/admin/users/{user_id}/usage")
@@ -2978,6 +3974,7 @@ def update_current_user_settings(
             "timezone": request.timezone.strip() or "America/New_York",
         },
     )
+    _invalidate_dashboard_user_cache(int(user["id"]))
     return {"settings": updated}
 
 
@@ -3045,7 +4042,32 @@ def get_current_user_notifications(user: dict[str, Any] = Depends(require_settin
     )
     if not notifications:
         raise HTTPException(status_code=404, detail="Notification settings not found")
-    return {"notifications": _public_notification_settings(notifications)}
+    return {"notifications": _public_notification_settings(_resolve_notification_settings(notifications))}
+
+
+@app.get("/notifications/delivery")
+def get_notification_delivery(user: dict[str, Any] = Depends(require_settings_user)) -> dict[str, Any]:
+    user_id = int(user["id"])
+    attempts = storage.list_notification_attempts(user_id=user_id, limit=500)
+    by_id = {int(entry["id"]): entry for entry in attempts}
+    public_attempts = []
+    for entry in attempts:
+        prior = by_id.get(int(entry.get("prior_success_attempt_id") or 0))
+        public_attempts.append({
+            key: entry.get(key) for key in (
+                "id", "item_id", "scan_cycle_id", "status", "notification_tier", "effective_price",
+                "expected_profit", "expected_roi", "principal_damage", "availability_state", "confidence",
+                "destination_identity", "successful_at", "prior_success_attempt_id", "fingerprint_match_reason",
+                "source", "next_eligible_at", "retry_count", "provider_status", "failure_category", "created_at",
+            )
+        } | ({
+            "prior_successful_at": prior.get("successful_at") or prior.get("updated_at"),
+            "prior_tier": prior.get("notification_tier") or prior.get("notification_type"),
+            "prior_price": prior.get("effective_price"),
+            "current_tier": entry.get("notification_tier") or entry.get("notification_type"),
+            "current_price": entry.get("effective_price"),
+        } if prior else {}))
+    return {"metrics": storage.notification_delivery_metrics(user_id), "attempts": public_attempts}
 
 
 @app.put("/settings/notifications")
@@ -3057,9 +4079,32 @@ def update_current_user_notifications(
         raise HTTPException(status_code=503, detail="APP_ENCRYPTION_KEY is required to save Discord webhooks when AUTH_REQUIRED=true")
     updates: dict[str, Any] = {
         "discord_enabled": int(bool(request.discord_enabled)),
+        "push_enabled": int(bool(request.push_enabled)),
+        "use_global_discord_webhook": int(bool(request.use_global_discord_webhook)),
         "alerts_enabled": int(bool(request.alerts_enabled)),
         "notify_best_finds": int(bool(request.notify_best_finds)),
         "notify_priority_review": int(bool(request.notify_priority_review)),
+        "send_gem_immediately": int(bool(request.send_gem_immediately)),
+        "send_profitable_immediately": int(bool(request.send_profitable_immediately)),
+        "review_delivery_mode": request.review_delivery_mode,
+        "max_review_alerts_per_hour": request.max_review_alerts_per_hour,
+        "duplicate_suppression_hours": request.duplicate_suppression_hours,
+        "meaningful_price_drop_amount": request.meaningful_price_drop_amount,
+        "meaningful_price_drop_percent": request.meaningful_price_drop_percent,
+        "meaningful_profit_increase_amount": request.meaningful_profit_increase_amount,
+        "meaningful_profit_increase_percent": request.meaningful_profit_increase_percent,
+        "meaningful_roi_increase": request.meaningful_roi_increase,
+        "catchup_enabled": int(bool(request.catchup_enabled)),
+        "catchup_batch_size": request.catchup_batch_size,
+        "catchup_include_review": int(bool(request.catchup_include_review)),
+        "gem_min_expected_profit": request.gem_min_expected_profit,
+        "profitable_min_expected_profit": request.profitable_min_expected_profit,
+        "review_min_expected_profit": request.review_min_expected_profit,
+        "review_min_upside_profit": request.review_min_upside_profit,
+        "gem_min_roi": request.gem_min_roi,
+        "profitable_min_roi": request.profitable_min_roi,
+        "review_min_roi": request.review_min_roi,
+        "max_listing_age_minutes": request.max_listing_age_minutes,
     }
     if request.clear_discord_webhook:
         updates["discord_webhook"] = ""
@@ -3072,29 +4117,108 @@ def update_current_user_notifications(
         int(user["id"]),
         storage.update_user_notification_settings(int(user["id"]), updates),
     )
-    return {"notifications": _public_notification_settings(notifications)}
+    return {"notifications": _public_notification_settings(_resolve_notification_settings(notifications))}
 
 
 @app.post("/settings/notifications/test-discord")
 async def test_current_user_discord_notification(
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> dict[str, Any]:
-    notifications = _normalize_notification_settings(
-        int(user["id"]),
-        storage.get_user_notification_settings(int(user["id"])),
+    return await _send_test_notification(_resolve_effective_user_settings(user))
+
+
+@app.get("/push/config")
+def get_push_config(user: dict[str, Any] = Depends(require_settings_user)) -> dict[str, Any]:
+    user_id = int(user["id"])
+    subscriptions = storage.list_push_subscriptions(user_id, enabled_only=True)
+    return {
+        "enabled": settings.push_configured,
+        "vapid_public_key": settings.vapid_public_key if settings.push_configured else None,
+        "active_subscriptions": len(subscriptions),
+    }
+
+
+@app.post("/push/subscriptions")
+def create_push_subscription(
+    request: PushSubscriptionRequest,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    if not settings.push_configured:
+        raise HTTPException(status_code=503, detail="Web Push is not configured on the server")
+    if not settings.app_encryption_key:
+        raise HTTPException(status_code=503, detail="APP_ENCRYPTION_KEY is required for Web Push subscriptions")
+    endpoint = request.endpoint.strip()
+    if not endpoint.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Push endpoint must use HTTPS")
+    subscription = storage.upsert_push_subscription(
+        user_id=int(user["id"]),
+        endpoint_hash=endpoint_hash(endpoint),
+        endpoint=encrypt_secret(endpoint, settings.app_encryption_key),
+        p256dh=encrypt_secret(request.keys.p256dh.strip(), settings.app_encryption_key),
+        auth=encrypt_secret(request.keys.auth.strip(), settings.app_encryption_key),
+        device_label=request.device_label.strip() or "Browser/PWA",
+        user_agent=request.user_agent,
     )
-    if not notifications or not notifications.get("discord_webhook_configured"):
-        raise HTTPException(status_code=400, detail="Discord webhook is not configured")
-    if not notifications.get("discord_enabled"):
-        raise HTTPException(status_code=400, detail="Discord notifications are disabled")
-    decrypted_webhook = str(notifications.get("_resolved_webhook_raw") or "").strip()
-    if not decrypted_webhook:
-        raise HTTPException(status_code=503, detail="Discord webhook could not be decrypted server-side")
-    notifier = DiscordNotifier(decrypted_webhook)
-    sent = await notifier.send_message(
-        f"Notifierr test notification for {user.get('display_name') or user.get('email') or 'user'}"
+    return {
+        "subscription": {
+            "id": subscription["id"],
+            "device_label": subscription["device_label"],
+            "enabled": subscription["enabled"],
+            "last_seen_at": subscription["last_seen_at"],
+        }
+    }
+
+
+@app.delete("/push/subscriptions")
+def delete_push_subscription(
+    request: PushSubscriptionDeleteRequest,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    disabled = storage.disable_push_subscription(int(user["id"]), endpoint_hash(request.endpoint.strip()))
+    return {"ok": True, "disabled": disabled}
+
+
+@app.post("/push/test")
+async def test_push_notification(user: dict[str, Any] = Depends(require_settings_user)) -> dict[str, Any]:
+    result = await asyncio.to_thread(
+        send_push_to_user,
+        storage,
+        settings,
+        user_id=int(user["id"]),
+        item={},
+        tier="TEST",
+        test=True,
     )
-    return {"ok": bool(sent)}
+    if result.selected == 0:
+        raise HTTPException(status_code=409, detail="No enabled push subscriptions are available")
+    if result.accepted == 0:
+        raise HTTPException(status_code=502, detail="No push provider accepted the test notification")
+    return result.as_dict()
+
+
+@app.get("/push/delivery")
+def get_push_delivery(user: dict[str, Any] = Depends(require_settings_user)) -> dict[str, Any]:
+    user_id = int(user["id"])
+    attempts = storage.list_push_delivery_attempts(user_id, limit=100)
+    counts = Counter(str(entry.get("status") or "unknown") for entry in attempts)
+    subscriptions = storage.list_push_subscriptions(user_id)
+    return {
+        "metrics": {
+            "active_subscriptions": sum(bool(entry.get("enabled")) for entry in subscriptions),
+            "selected": counts["selected"],
+            "attempted": counts["attempted"],
+            "accepted": counts["accepted"],
+            "failed": counts["failed"],
+            "invalid": counts["invalid"],
+        },
+        "attempts": [
+            {key: entry.get(key) for key in (
+                "id", "subscription_id", "device_label", "item_id", "scan_cycle_id",
+                "notification_tier", "status", "provider_status", "error_category", "created_at",
+            )}
+            for entry in attempts
+        ],
+    }
 
 
 @app.get("/settings/repair-overrides")
@@ -3120,6 +4244,7 @@ def create_current_user_repair_override(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_pricing_context_cache(int(user["id"]))
     return {"repair_override": override}
 
 
@@ -3132,6 +4257,7 @@ def delete_current_user_repair_override(
         storage.delete_user_repair_value_override(int(user["id"]), override_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Repair override not found") from None
+    _invalidate_pricing_context_cache(int(user["id"]))
     return {"ok": True, "override_id": override_id}
 
 
@@ -3166,6 +4292,7 @@ def create_current_user_resale_override(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_pricing_context_cache(int(user["id"]))
     return {"resale_override": override}
 
 
@@ -3178,7 +4305,57 @@ def delete_current_user_resale_override(
         storage.delete_user_resale_research_override(int(user["id"]), override_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Resale override not found") from None
+    _invalidate_pricing_context_cache(int(user["id"]))
     return {"ok": True, "override_id": override_id}
+
+
+@app.get("/items/{item_id}/feedback")
+def get_item_feedback(
+    item_id: str, user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    return {"feedback": storage.get_user_item_feedback(int(user["id"]), item_id)}
+
+
+@app.put("/items/{item_id}/feedback")
+def put_item_feedback(
+    item_id: str, request: ItemFeedbackRequest,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    try:
+        feedback = storage.upsert_user_item_feedback(
+            int(user["id"]), item_id, label=request.label, note=request.note,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Item not found") from None
+    return {"feedback": feedback}
+
+
+@app.get("/items/{item_id}/outcome")
+def get_item_outcome(
+    item_id: str, user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    return {"outcome": storage.get_user_item_outcome(int(user["id"]), item_id)}
+
+
+@app.put("/items/{item_id}/outcome")
+def put_item_outcome(
+    item_id: str, request: ItemOutcomeRequest,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    values = request.dict(exclude_unset=True)
+    for field_name in ("purchase_date", "sale_date"):
+        if values.get(field_name):
+            try:
+                date.fromisoformat(values[field_name])
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"{field_name} must be YYYY-MM-DD") from None
+    try:
+        outcome = storage.upsert_user_item_outcome(int(user["id"]), item_id, values=values)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Item not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"outcome": outcome}
 
 
 @app.get("/items/{item_id}/correction")
@@ -3196,13 +4373,32 @@ def put_item_correction(
     request: ItemCorrectionRequest,
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> dict[str, Any]:
+    existing_correction = storage.get_user_item_correction(int(user["id"]), item_id) or {}
+    feedback_only = bool(request.feedback_code) and all(
+        value is None
+        for value in (
+            request.corrected_model,
+            request.corrected_storage_capacity,
+            request.corrected_issue_type,
+            request.corrected_part_cost,
+        )
+    ) and not request.note.strip()
     corrected_model = (request.corrected_model or "").strip() or None
     corrected_storage_capacity = (request.corrected_storage_capacity or "").strip() or None
     corrected_issue_type = (request.corrected_issue_type or "").strip() or None
+    feedback_code = (request.feedback_code or "").strip().lower()
+    if feedback_only:
+        corrected_model = existing_correction.get("corrected_model")
+        corrected_storage_capacity = existing_correction.get("corrected_storage_capacity")
+        corrected_issue_type = existing_correction.get("corrected_issue_type")
+        request.corrected_part_cost = existing_correction.get("corrected_part_cost")
+        request.note = str(existing_correction.get("note") or "")
     if corrected_storage_capacity and corrected_storage_capacity not in SUPPORTED_STORAGE_CAPACITIES:
         raise HTTPException(status_code=400, detail="Unsupported corrected_storage_capacity")
     if corrected_issue_type and corrected_issue_type not in SUPPORTED_CORRECTION_ISSUE_TYPES:
         raise HTTPException(status_code=400, detail="Unsupported corrected_issue_type")
+    if feedback_code and feedback_code not in SUPPORTED_FEEDBACK_CODES:
+        raise HTTPException(status_code=400, detail="Unsupported feedback_code")
     if not any(
         value
         for value in (
@@ -3210,6 +4406,7 @@ def put_item_correction(
             corrected_storage_capacity,
             corrected_issue_type,
             request.corrected_part_cost,
+            feedback_code,
             request.note.strip(),
         )
     ):
@@ -3227,12 +4424,14 @@ def put_item_correction(
             corrected_storage_capacity=corrected_storage_capacity,
             corrected_issue_type=corrected_issue_type,
             corrected_part_cost=request.corrected_part_cost,
+            feedback_code=feedback_code,
             note=request.note,
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None
     pricing_context = _build_user_pricing_context(int(user["id"]))
     rescored = _rescore_stored_item(current_item, resolved, pricing_context=pricing_context)
+    _dashboard_stats_cache.pop(int(user["id"]), None)
     return {
         "ok": True,
         "correction": correction,
@@ -3259,6 +4458,7 @@ def delete_item_correction(
         raise HTTPException(status_code=404, detail="Correction not found") from None
     pricing_context = _build_user_pricing_context(int(user["id"]))
     rescored = _rescore_stored_item(current_item, resolved, pricing_context=pricing_context)
+    _dashboard_stats_cache.pop(int(user["id"]), None)
     return {
         "ok": True,
         "correction": None,
@@ -3335,47 +4535,188 @@ def list_items(
     status: Optional[str] = None,
     user_status: Optional[str] = None,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     include_ignored: bool = False,
     include_stale: bool = False,
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> list[dict[str, Any]]:
-    resolved = _resolve_effective_user_settings(user)
-    if not resolved.user:
+    if not user:
         return []
-    user_id = int(resolved.user["id"])
-    pricing_context = _build_user_pricing_context(user_id)
+    user_id = int(user["id"])
+    offset_value = offset if isinstance(offset, int) else 0
+    freshness_kwargs = _dashboard_freshness_kwargs(user_id)
+    pricing_context = _cached_pricing_context_for_user(user_id)
+    missed_opportunities = status == "missed_opportunities"
+    unsent_actionable = status == "unsent_actionable"
     items = storage.list_user_items(
-        int(resolved.user["id"]),
-        status=status,
+        user_id,
+        status=None if (missed_opportunities or unsent_actionable) else status,
         user_status=user_status,
-        limit=limit,
+        limit=500 if missed_opportunities else limit,
+        offset=0 if missed_opportunities else offset_value,
         include_ignored=include_ignored,
         include_stale=include_stale,
-        max_alert_item_age_minutes=resolved.max_alert_item_age_minutes,
-        max_priority_review_item_age_hours=resolved.max_priority_review_item_age_hours,
-        max_active_queue_item_age_hours=resolved.max_active_queue_item_age_hours,
+        **freshness_kwargs,
     )
-    return [
-        _decorate_item_for_user(item, user_id=user_id, pricing_context=pricing_context)
+    corrections = storage.list_user_item_corrections_for_items(
+        user_id,
+        [str(item.get("item_id") or "") for item in items],
+    )
+    correction_by_item_id = {str(correction.get("item_id") or ""): correction for correction in corrections}
+    resolved = _resolve_effective_user_settings(user)
+    decorated = [
+        _decorate_alert_decision(_decorate_item_for_user(
+            item,
+            user_id=user_id,
+            pricing_context=pricing_context,
+            correction_by_item_id=correction_by_item_id,
+        ), resolved)
         for item in items
     ]
+    delivered = storage.successfully_notified_item_ids(user_id)
+    for item in decorated:
+        item["successfully_notified"] = str(item.get("item_id") or "") in delivered
+        item["never_notified_actionable"] = bool(
+            item.get("alert_tier") in {"GEM", "PROFITABLE"} and not item["successfully_notified"]
+        )
+    if unsent_actionable:
+        return [item for item in decorated if item.get("never_notified_actionable")][offset_value:offset_value + limit]
+    if missed_opportunities:
+        decorated = [
+            item for item in decorated
+            if _is_missed_opportunity(item)
+        ]
+        return decorated[offset_value:offset_value + limit]
+    return decorated
+
+
+_DASHBOARD_QUEUES = {
+    "high_quality", "profitable", "review", "unsent_actionable", "missed_opportunities",
+    "priority_review", "needs_data", "watched", "promoted", "ignored", "rejected", "all",
+}
+
+
+def _dashboard_queue_matches(item: dict[str, Any], queue: str) -> bool:
+    if queue == "high_quality":
+        return item.get("alert_tier") == "GEM"
+    if queue == "profitable":
+        return item.get("alert_tier") == "PROFITABLE"
+    if queue == "review":
+        return item.get("alert_tier") == "REVIEW"
+    if queue == "unsent_actionable":
+        return item.get("never_notified_actionable") is True
+    if queue == "missed_opportunities":
+        return _is_missed_opportunity(item) and (
+            item.get("alert_tier") in {"REVIEW", "PROFITABLE"} or (
+                float(item.get("profit_mid") or 0) > 0
+                and len((item.get("alert_decision") or {}).get("blocking_reasons") or []) <= 2
+            )
+        )
+    if queue == "priority_review":
+        return _is_priority_review_candidate(item)
+    if queue == "needs_data":
+        return _is_needs_data_item(item)
+    if queue == "watched":
+        return item.get("user_status") == "watched"
+    if queue == "promoted":
+        return item.get("user_status") == "promoted" and bool(item.get("promoted_at"))
+    if queue == "ignored":
+        return item.get("user_status") == "ignored"
+    if queue == "rejected":
+        return (item.get("status") == "rejected" or item.get("user_status") == "rejected") and item.get("user_status") != "ignored"
+    return item.get("user_status") != "ignored"
+
+
+def _dashboard_search_matches(item: dict[str, Any], query: str) -> bool:
+    if not query:
+        return True
+    fields = [
+        item.get("title"), item.get("model"), item.get("seller_username"),
+        item.get("manual_review_reason"), item.get("pricing_warning"),
+        *(item.get("positive_flags") or []), *(item.get("risk_flags") or []),
+        *(item.get("hard_reject_flags") or []), *(item.get("listing_classification_flags") or []),
+    ]
+    return query in " ".join(str(value or "") for value in fields).lower()
+
+
+def _dashboard_visible_in_queue(
+    item: dict[str, Any], queue: str, *, include_ignored: bool, include_stale: bool,
+) -> bool:
+    return (
+        (include_ignored or queue == "ignored" or item.get("user_status") != "ignored")
+        and (include_stale or queue == "all" or item.get("fresh_for_active_queue") is not False)
+        and _dashboard_queue_matches(item, queue)
+    )
+
+
+def _dashboard_sort_key(item: dict[str, Any], sort: str, queue: str) -> tuple[Any, ...]:
+    found = _parse_utc_datetime(str(item.get("found_at") or ""))
+    found_time = found.timestamp() if found else 0.0
+    if sort == "profit":
+        return (float(item.get("estimated_profit") or 0) if item.get("estimated_profit_available") else float("-inf"),)
+    if sort == "score":
+        return (float(item.get("score") or 0),)
+    if sort == "price":
+        return (-float(item.get("total_cost") or 0),)
+    if queue == "priority_review":
+        return (
+            max(float(item.get("profit_high") or 0), float(item.get("estimated_profit") or 0), float(item.get("profit_mid") or 0)),
+            float(item.get("score") or 0), found_time,
+        )
+    return (found_time,)
+
+
+@app.get("/items/dashboard")
+def dashboard_items(
+    queue: str = Query(default="all"),
+    sort: str = Query(default="newest"),
+    search: str = Query(default=""),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    include_ignored: bool = False,
+    include_stale: bool = False,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    if queue not in _DASHBOARD_QUEUES or sort not in {"newest", "profit", "score", "price"}:
+        raise HTTPException(status_code=400, detail="Invalid dashboard queue or sort")
+    if not user:
+        return {"items": [], "total": 0, "counts": {}, "limit": limit, "offset": offset}
+    counts = {name: 0 for name in _DASHBOARD_QUEUES}
+    matched: list[dict[str, Any]] = []
+    query = search.strip().lower()
+    source_offset = 0
+    # The storage query is bounded, while queue membership and sorting happen before page slicing.
+    while True:
+        batch = list_items(
+            status=None, user_status=None, limit=500, offset=source_offset,
+            include_ignored=True, include_stale=True, user=user,
+        )
+        for item in batch:
+            for name in counts:
+                if _dashboard_visible_in_queue(
+                    item, name, include_ignored=include_ignored, include_stale=include_stale,
+                ):
+                    counts[name] += 1
+            if _dashboard_visible_in_queue(
+                item, queue, include_ignored=include_ignored, include_stale=include_stale,
+            ) and _dashboard_search_matches(item, query):
+                matched.append(item)
+        source_offset += len(batch)
+        if len(batch) < 500:
+            break
+    matched.sort(key=lambda item: _dashboard_sort_key(item, sort, queue), reverse=True)
+    return {"items": matched[offset:offset + limit], "total": len(matched), "counts": counts, "limit": limit, "offset": offset}
 
 
 @app.get("/stats")
 def stats(user: dict[str, Any] = Depends(require_settings_user)) -> dict[str, Any]:
-    resolved = _resolve_effective_user_settings(user)
-    if not resolved.user:
+    if not user:
         return storage.stats(
-            max_alert_item_age_minutes=resolved.max_alert_item_age_minutes,
-            max_priority_review_item_age_hours=resolved.max_priority_review_item_age_hours,
-            max_active_queue_item_age_hours=resolved.max_active_queue_item_age_hours,
+            max_alert_item_age_minutes=settings.max_alert_item_age_minutes,
+            max_priority_review_item_age_hours=settings.max_priority_review_item_age_hours,
+            max_active_queue_item_age_hours=settings.max_active_queue_item_age_hours,
         )
-    return storage.stats_for_user(
-        int(resolved.user["id"]),
-        max_alert_item_age_minutes=resolved.max_alert_item_age_minutes,
-        max_priority_review_item_age_hours=resolved.max_priority_review_item_age_hours,
-        max_active_queue_item_age_hours=resolved.max_active_queue_item_age_hours,
-    )
+    return _cached_dashboard_stats_for_user(int(user["id"]))
 
 
 @app.get("/config")
@@ -3386,13 +4727,18 @@ def config(user: Optional[dict[str, Any]] = Depends(require_auth_if_enabled)) ->
 
 @app.post("/config/reload")
 def reload_config(user: Optional[dict[str, Any]] = Depends(require_auth_if_enabled)) -> dict[str, Any]:
-    del user
     global settings, repair_values, resale_research, scoring_rules, storage
+    if settings.runtime_env == "production" and (not user or user.get("role") != "admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
     settings = load_settings()
     repair_values = load_repair_values(settings.repair_values_path)
     resale_research = load_resale_research(settings.resale_research_path)
     scoring_rules = load_scoring_rules(settings.scoring_rules_path)
     storage = create_storage(settings)
+    _dashboard_freshness_cache.clear()
+    _pricing_context_cache.clear()
+    _invalidate_all_dashboard_stats_cache()
+    _invalidate_polling_status_cache()
     _bootstrap_admin_if_configured()
     logger.info("Reloaded config")
     return _config_payload()
@@ -3483,6 +4829,7 @@ def update_repair_value_part(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_pricing_context_cache(int(user["id"]))
 
     pricing_context = _build_user_pricing_context(int(user["id"]))
     response: dict[str, Any] = {
@@ -3513,12 +4860,16 @@ def update_global_repair_value_part(
 ) -> dict[str, Any]:
     global repair_values
     del admin_user
+    if settings.runtime_env == "production":
+        raise HTTPException(status_code=409, detail="Global repair baseline is immutable in production; use the per-user repair override endpoint")
     if request.part not in SUPPORTED_OVERRIDE_PARTS:
         raise HTTPException(status_code=400, detail="Unsupported part")
     try:
         repair_values = _update_repair_values_part(settings.repair_values_path, model, request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _pricing_context_cache.clear()
+    _invalidate_all_dashboard_stats_cache()
 
     response: dict[str, Any] = {
         "ok": True,
@@ -3538,7 +4889,9 @@ def note_item(
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> dict[str, Any]:
     try:
-        return storage.set_user_item_note(int(user["id"]), item_id, request.note)
+        updated = storage.set_user_item_note(int(user["id"]), item_id, request.note)
+        _dashboard_stats_cache.pop(int(user["id"]), None)
+        return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None
 
@@ -3551,7 +4904,9 @@ def ignore_item_seller(
 ) -> dict[str, Any]:
     request = request or IgnoreRequest()
     try:
-        return storage.ignore_seller_from_item(item_id, user_id=int(user["id"]), reason=request.reason or "Ignored seller")
+        updated = storage.ignore_seller_from_item(item_id, user_id=int(user["id"]), reason=request.reason or "Ignored seller")
+        _dashboard_stats_cache.pop(int(user["id"]), None)
+        return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None
     except ValueError as exc:
@@ -3581,6 +4936,7 @@ def add_ignored_keyword(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _dashboard_stats_cache.pop(int(user["id"]), None)
     return {"ok": True, "keyword": request.keyword}
 
 
@@ -3592,6 +4948,35 @@ async def scan_once(
     resolved_settings: EffectiveUserSettings | None = None,
     cycle_mode: str = "manual",
     force_source_call: bool = False,
+    offload_scan_work: bool = False,
+) -> dict[str, Any]:
+    lease_run = await run_with_scan_lease(
+        storage,
+        lambda: _scan_once_process_locked(
+            keywords, limit, notify, resolved_settings=resolved_settings,
+            cycle_mode=cycle_mode, force_source_call=force_source_call,
+            offload_scan_work=offload_scan_work,
+        ),
+        lease_name=GLOBAL_SCAN_LEASE_NAME,
+        worker_id=WORKER_ID,
+        hostname=_hostname(),
+        process_id=_process_id(),
+    )
+    if not lease_run.acquired:
+        _persist_skipped_scan_cycle(mode=cycle_mode, reason="scan_already_running", keywords=list(keywords or []))
+        return _empty_scan_summary(keywords=list(keywords or []), reason="scan_already_running", mode="local")
+    return lease_run.value
+
+
+async def _scan_once_process_locked(
+    keywords: Optional[list[str]],
+    limit: Optional[int],
+    notify: bool,
+    *,
+    resolved_settings: EffectiveUserSettings | None = None,
+    cycle_mode: str = "manual",
+    force_source_call: bool = False,
+    offload_scan_work: bool = False,
 ) -> dict[str, Any]:
     resolved = resolved_settings or _resolve_effective_user_settings()
     if not resolved.user:
@@ -3643,7 +5028,13 @@ async def scan_once(
     )
     async with _scan_lock:
         try:
-            summary = await _scan_once_unlocked(scan_keywords, scan_limit, notify, resolved, scan_cycle_id=cycle_id)
+            if offload_scan_work:
+                summary = await _run_background_scan_work(
+                    lambda: _scan_once_unlocked(scan_keywords, scan_limit, notify, resolved, scan_cycle_id=cycle_id),
+                    label=cycle_mode,
+                )
+            else:
+                summary = await _scan_once_unlocked(scan_keywords, scan_limit, notify, resolved, scan_cycle_id=cycle_id)
         except Exception as exc:
             rate_limit_status = None
             if isinstance(exc, EbayRateLimitError):
@@ -3690,6 +5081,10 @@ async def _scan_once_unlocked(
     ebay = EbayClient(settings)
     listings = await ebay.search(keywords, limit)
     pricing_context = _build_user_pricing_context(int(resolved.user["id"]))
+    identity = decision_identity(
+        scoring_rules=scoring_rules, repair_values=pricing_context.repair_values,
+        resale_research=pricing_context.resale_research, effective_settings=resolved,
+    )
     notifier = (
         DiscordNotifier(resolved.resolved_discord_webhook_url)
         if notify and resolved.resolved_discord_webhook_url
@@ -3706,6 +5101,7 @@ async def _scan_once_unlocked(
     rejected = 0
     alerts_sent = 0
     duplicates_skipped = 0
+    detail_refresh_attempts = 0
     counters = ScanCycleCounters()
 
     for listing in listings:
@@ -3715,21 +5111,44 @@ async def _scan_once_unlocked(
             duplicates_skipped += 1
         else:
             new_items_found += 1
+            storage.upsert_marketplace_item(listing)
         result, _item_overrides = _score_listing_for_user(
             listing,
             resolved,
             pricing_context=pricing_context,
         )
-        if _should_fetch_selective_detail(listing, result, resolved):
+        detail_reasons = _detail_refresh_reasons(listing, result, resolved)
+        if detail_reasons and detail_refresh_attempts < MAX_DETAIL_REFRESHES_PER_SCAN:
+            detail_refresh_attempts += 1
+            detail_requested_at = _utc_now_iso()
             detailed_listing = await _fetch_selective_detail(ebay, listing)
             if detailed_listing:
-                listing = {**listing, **_detail_fields(detailed_listing)}
+                detail_fields = _detail_fields(detailed_listing)
+                listing = {
+                    **listing,
+                    **detail_fields,
+                    "detail_fetch_attempted_at": detail_requested_at,
+                    "detail_fetch_status": "succeeded",
+                    "detail_fetch_reason": ",".join(detail_reasons),
+                    "detail_fetch_recovered_fields": _detail_fetch_fields(listing, detail_fields),
+                    "detail_fetch_failure_reason": "",
+                    "detail_fetch_retry_after": None,
+                }
                 result, _item_overrides = _score_listing_for_user(
                     listing,
                     resolved,
                     pricing_context=pricing_context,
                 )
-        item = {**listing, **result.as_item_fields()}
+            else:
+                listing.update({
+                    "detail_fetch_attempted_at": detail_requested_at,
+                    "detail_fetch_status": "failed",
+                    "detail_fetch_reason": ",".join(detail_reasons),
+                    "detail_fetch_recovered_fields": [],
+                    "detail_fetch_failure_reason": "detail_unavailable_or_transient_failure",
+                    "detail_fetch_retry_after": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+                })
+        item = {**listing, **result.as_item_fields(), **identity, "_scored_for_user": True}
         item.update(_repair_snapshot_for_item(item, user_id=int(resolved.user["id"]), pricing_context=pricing_context, correction=_item_overrides["correction"]))
         item = _apply_availability_and_auction_policy(item)
         ignored = storage.ignored_match(listing, user_id=int(resolved.user["id"]))
@@ -3738,6 +5157,12 @@ async def _scan_once_unlocked(
         storage.upsert_user_item(int(resolved.user["id"]), item)
         stored_item = storage.get_user_item(int(resolved.user["id"]), item["item_id"], **resolved.freshness_kwargs()) or item
         stored_item = _decorate_item_for_user(stored_item, user_id=int(resolved.user["id"]), pricing_context=pricing_context)
+        alert_decision = evaluate_alert_decision(stored_item, result, resolved)
+        stored_item.update({
+            "alert_tier": alert_decision.tier,
+            "tier_eligible": alert_decision.eligible,
+            "alert_decision": alert_decision.as_dict(),
+        })
 
         if stored_item.get("fresh_for_active_queue"):
             fresh_items_found += 1
@@ -3763,17 +5188,13 @@ async def _scan_once_unlocked(
         elif _is_priority_review_candidate(stored_item):
             priority_review += 1
 
-        should_alert = (
-            notify
-            and resolved.alerts_enabled
-            and resolved.discord_enabled_for_alerts
-            and resolved.notify_best_finds
-            and notifier is not None
-            and stored_item.get("status") == "candidate"
-            and should_notify_item(stored_item, result, resolved)
-            and not result.hard_reject_flags
-            and stored_item.get("user_status") != "ignored"
-            and not storage.was_alerted_for_user(int(resolved.user["id"]), stored_item["item_id"])
+        should_alert, notification_block_reason, was_deduplicated = _notification_delivery_gate(
+            stored_item,
+            result,
+            resolved,
+            decision=alert_decision,
+            notify=notify,
+            user_id=int(resolved.user["id"]),
         )
         alert_block_reasons = [] if should_alert else _alert_block_reasons(stored_item, result, resolved)
         _record_decision_trace(
@@ -3785,12 +5206,27 @@ async def _scan_once_unlocked(
             current_settings=resolved,
             alert_block_reasons=alert_block_reasons,
         )
+        if notification_block_reason and notification_block_reason not in {"retry_backoff", "permanent_delivery_failure"}:
+            _record_notification_skip(
+                resolved,
+                item_id=stored_item["item_id"],
+                scan_cycle_id=scan_cycle_id,
+                notification_type=(alert_decision.tier or "suppressed").lower(),
+                reason=notification_block_reason,
+                deduplicated=was_deduplicated,
+                item=stored_item,
+                decision=alert_decision,
+                next_eligible_at=((datetime.now(timezone.utc) + timedelta(hours=1)).isoformat() if notification_block_reason == "review_hourly_limit" else None),
+            )
         if should_alert:
             counters.alerts_attempted += 1
         if should_alert and await _send_alert_notification(
             notifier,
             stored_item,
             user_id=int(resolved.user["id"]),
+            scan_cycle_id=scan_cycle_id,
+            destination_source=str(resolved.notification_settings.get("webhook_source") or ""),
+            decision=alert_decision,
         ):
             storage.mark_alerted_for_user(int(resolved.user["id"]), stored_item["item_id"])
             alerts_sent += 1
@@ -3818,6 +5254,9 @@ async def _scan_once_unlocked(
         "fresh_items_found": fresh_items_found,
         "stale_items_seen": stale_items_seen,
         "best_finds": best_finds,
+        "gem": int(counters.final_bucket_counts.get("gem", 0)),
+        "profitable": int(counters.final_bucket_counts.get("profitable", 0)),
+        "review": int(counters.final_bucket_counts.get("review", 0)),
         "priority_review": priority_review,
         "candidates": candidates,
         "rejected": rejected,
@@ -3838,6 +5277,42 @@ async def scan_shared_once(
     keyword_filter: list[str] | None = None,
     cycle_mode: str | None = None,
     force_source_call: bool = False,
+    offload_scan_work: bool = False,
+) -> dict[str, Any]:
+    resolved_cycle_mode = cycle_mode or ("shared_background" if background_mode else "manual")
+    lease_run = await run_with_scan_lease(
+        storage,
+        lambda: _scan_shared_once_process_locked(
+            limit=limit, notify=notify, triggered_by_user=triggered_by_user,
+            background_mode=background_mode, keyword_filter=keyword_filter,
+            cycle_mode=cycle_mode, force_source_call=force_source_call,
+            offload_scan_work=offload_scan_work,
+        ),
+        lease_name=GLOBAL_SCAN_LEASE_NAME,
+        worker_id=WORKER_ID,
+        hostname=_hostname(),
+        process_id=_process_id(),
+    )
+    if not lease_run.acquired:
+        _persist_skipped_scan_cycle(
+            mode=resolved_cycle_mode, reason="scan_already_running",
+            user_id=int(triggered_by_user["id"]) if triggered_by_user else None,
+            keywords=list(keyword_filter or []),
+        )
+        return _empty_scan_summary(keywords=list(keyword_filter or []), reason="scan_already_running", mode="shared")
+    return lease_run.value
+
+
+async def _scan_shared_once_process_locked(
+    *,
+    limit: int,
+    notify: bool,
+    triggered_by_user: dict[str, Any] | None,
+    background_mode: bool,
+    keyword_filter: list[str] | None = None,
+    cycle_mode: str | None = None,
+    force_source_call: bool = False,
+    offload_scan_work: bool = False,
 ) -> dict[str, Any]:
     resolved_cycle_mode = cycle_mode or ("shared_background" if background_mode else "manual")
     if _scan_lock.locked():
@@ -3894,15 +5369,29 @@ async def scan_shared_once(
     runtime_context: dict[str, Any] = {"keywords": list(keyword_filter or []), "users_considered": 0, "users_scanned": 0}
     async with _scan_lock:
         try:
-            summary = await _scan_shared_once_unlocked(
-                limit=limit,
-                notify=notify,
-                triggered_by_user=triggered_by_user,
-                background_mode=background_mode,
-                keyword_filter=keyword_filter,
-                scan_cycle_id=cycle_id,
-                scan_cycle_runtime_context=runtime_context,
-            )
+            if offload_scan_work:
+                summary = await _run_background_scan_work(
+                    lambda: _scan_shared_once_unlocked(
+                        limit=limit,
+                        notify=notify,
+                        triggered_by_user=triggered_by_user,
+                        background_mode=background_mode,
+                        keyword_filter=keyword_filter,
+                        scan_cycle_id=cycle_id,
+                        scan_cycle_runtime_context=runtime_context,
+                    ),
+                    label=resolved_cycle_mode,
+                )
+            else:
+                summary = await _scan_shared_once_unlocked(
+                    limit=limit,
+                    notify=notify,
+                    triggered_by_user=triggered_by_user,
+                    background_mode=background_mode,
+                    keyword_filter=keyword_filter,
+                    scan_cycle_id=cycle_id,
+                    scan_cycle_runtime_context=runtime_context,
+                )
         except Exception as exc:
             rate_limit_status = None
             if isinstance(exc, EbayRateLimitError):
@@ -3974,6 +5463,7 @@ async def _scan_shared_once_unlocked(
         resolved_users,
         limit=scan_limit,
         keyword_filter=keyword_filter,
+        include_system_rotation=background_mode and not keyword_filter,
     )
     if not plan:
         return _empty_scan_summary(
@@ -3994,8 +5484,11 @@ async def _scan_shared_once_unlocked(
     usage: dict[int, dict[str, float]] = {}
     resolved_by_user_id = {int(resolved.user["id"]): resolved for resolved in resolved_users if resolved.user}
     pricing_context_cache: dict[int, UserPricingContext] = {}
+    identity_cache: dict[int, dict[str, str]] = {}
     unique_listings: dict[str, dict[str, Any]] = {}
     item_subscribers: dict[str, set[int]] = {}
+    item_search_ids: dict[str, set[int]] = {}
+    search_metrics: dict[int, dict[str, Any]] = {}
     api_calls_made = 0
     total_items_returned = 0
     total_users_evaluated = 0
@@ -4010,6 +5503,7 @@ async def _scan_shared_once_unlocked(
     candidates = 0
     rejected = 0
     counters = ScanCycleCounters()
+    detail_refresh_attempts = 0
 
     try:
         for entry in plan:
@@ -4036,6 +5530,16 @@ async def _scan_shared_once_unlocked(
                 [str(listing.get("item_id") or "") for listing in listings],
                 marketplace=entry.marketplace,
             )
+            search_metrics[search_id] = {
+                "unique_new_items": set(),
+                "duplicate_items": 0,
+                "viable_whole_phones": set(),
+                "detail_attempts": set(), "detail_successes": set(), "detail_failures": set(),
+                "components": set(), "needs_data": set(), "rejected": set(),
+                "alert_eligible": set(),
+                "tiers": {},
+                "alerts": set(),
+            }
             shared_api_call_credit = 1.0 / max(1, len(entry.subscribers))
             for resolved in entry.subscribers:
                 if not resolved.user:
@@ -4057,13 +5561,18 @@ async def _scan_shared_once_unlocked(
                 item_id = str(listing.get("item_id") or "").strip()
                 if not item_id:
                     continue
+                item_search_ids.setdefault(item_id, set()).add(search_id)
                 if item_id not in unique_listings:
                     if storage.marketplace_item_exists(item_id):
                         duplicates_skipped += 1
+                        search_metrics[search_id]["duplicate_items"] += 1
                     else:
                         new_items_found += 1
+                        search_metrics[search_id]["unique_new_items"].add(item_id)
+                        storage.upsert_marketplace_item(listing, marketplace=entry.marketplace)
                     unique_listings[item_id] = dict(listing)
                 else:
+                    search_metrics[search_id]["duplicate_items"] += 1
                     unique_listings[item_id] = {**unique_listings[item_id], **dict(listing)}
                 subscriber_ids = item_subscribers.setdefault(item_id, set())
                 for resolved in entry.subscribers:
@@ -4077,6 +5586,8 @@ async def _scan_shared_once_unlocked(
                 continue
             initial_results: dict[int, Any] = {}
             should_fetch_detail = False
+            detail_fetch_succeeded = False
+            detail_reasons: list[str] = []
             for resolved in subscribed_users:
                 pricing_context = _pricing_context_for_user(int(resolved.user["id"]), pricing_context_cache)
                 result, _item_overrides = _score_listing_for_user(
@@ -4085,26 +5596,61 @@ async def _scan_shared_once_unlocked(
                     pricing_context=pricing_context,
                 )
                 initial_results[int(resolved.user["id"])] = (result, _item_overrides)
-                if _should_fetch_selective_detail(listing, result, resolved):
+                user_detail_reasons = _detail_refresh_reasons(listing, result, resolved)
+                if user_detail_reasons:
                     should_fetch_detail = True
-            if should_fetch_detail:
+                    detail_reasons.extend(user_detail_reasons)
+            if should_fetch_detail and detail_refresh_attempts < MAX_DETAIL_REFRESHES_PER_SCAN:
+                detail_refresh_attempts += 1
+                for search_id in item_search_ids.get(item_id, set()):
+                    search_metrics[search_id]["detail_attempts"].add(item_id)
+                detail_requested_at = _utc_now_iso()
                 detailed_listing = await _fetch_selective_detail(ebay, listing)
                 if detailed_listing:
-                    listing = {**listing, **_detail_fields(detailed_listing)}
+                    detail_fetch_succeeded = True
+                    for search_id in item_search_ids.get(item_id, set()):
+                        search_metrics[search_id]["detail_successes"].add(item_id)
+                    detail_fields = _detail_fields(detailed_listing)
+                    listing = {
+                        **listing,
+                        **detail_fields,
+                        "detail_fetch_attempted_at": detail_requested_at,
+                        "detail_fetch_status": "succeeded",
+                        "detail_fetch_reason": ",".join(dict.fromkeys(detail_reasons)),
+                        "detail_fetch_recovered_fields": _detail_fetch_fields(listing, detail_fields),
+                        "detail_fetch_failure_reason": "",
+                        "detail_fetch_retry_after": None,
+                    }
                     for resolved in subscribed_users:
                         usage[int(resolved.user["id"])]["detail_refreshes"] += 1
+                else:
+                    for search_id in item_search_ids.get(item_id, set()):
+                        search_metrics[search_id]["detail_failures"].add(item_id)
+                    listing.update({
+                        "detail_fetch_attempted_at": detail_requested_at,
+                        "detail_fetch_status": "failed",
+                        "detail_fetch_reason": ",".join(dict.fromkeys(detail_reasons)),
+                        "detail_fetch_recovered_fields": [],
+                        "detail_fetch_failure_reason": "detail_unavailable_or_transient_failure",
+                        "detail_fetch_retry_after": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+                    })
             storage.upsert_marketplace_item(listing)
             for resolved in subscribed_users:
                 user_id = int(resolved.user["id"])
                 pricing_context = _pricing_context_for_user(user_id, pricing_context_cache)
                 result, item_overrides = initial_results[user_id]
-                if should_fetch_detail and listing.get("raw_json", {}).get("details"):
+                if detail_fetch_succeeded:
                     result, item_overrides = _score_listing_for_user(
                         listing,
                         resolved,
                         pricing_context=pricing_context,
                     )
-                item = {**listing, **result.as_item_fields()}
+                if user_id not in identity_cache:
+                    identity_cache[user_id] = decision_identity(
+                        scoring_rules=scoring_rules, repair_values=pricing_context.repair_values,
+                        resale_research=pricing_context.resale_research, effective_settings=resolved,
+                    )
+                item = {**listing, **result.as_item_fields(), **identity_cache[user_id], "_scored_for_user": True}
                 item.update(_repair_snapshot_for_item(item, user_id=user_id, pricing_context=pricing_context, correction=item_overrides["correction"]))
                 item = _apply_availability_and_auction_policy(item)
                 ignored = storage.ignored_match(listing, user_id=user_id)
@@ -4115,12 +5661,44 @@ async def _scan_shared_once_unlocked(
                 usage[user_id]["items_scored"] += 1
                 stored_item = storage.get_user_item(user_id, item["item_id"], **resolved.freshness_kwargs()) or item
                 stored_item = _decorate_item_for_user(stored_item, user_id=user_id, pricing_context=pricing_context)
+                alert_decision = evaluate_alert_decision(stored_item, result, resolved)
+                stored_item.update({
+                    "alert_tier": alert_decision.tier,
+                    "tier_eligible": alert_decision.eligible,
+                    "alert_decision": alert_decision.as_dict(),
+                })
+                for search_id in item_search_ids.get(item_id, set()):
+                    metric = search_metrics[search_id]
+                    if stored_item.get("item_type") == "component":
+                        metric["components"].add(item_id)
+                    if _is_needs_data_item(stored_item):
+                        metric["needs_data"].add(item_id)
+                    if item.get("status") == "rejected":
+                        metric["rejected"].add(item_id)
+                    if alert_decision.eligible:
+                        metric["alert_eligible"].add(item_id)
+                    storage.update_shared_scan_result(
+                        search_id, item_id, newly_discovered=item_id in metric["unique_new_items"],
+                        detail_status=str(listing.get("detail_fetch_status") or "not_requested"),
+                        item_type=str(stored_item.get("item_type") or "ambiguous"),
+                        tier=alert_decision.tier, needs_data=_is_needs_data_item(stored_item),
+                        rejected=item.get("status") == "rejected", alert_eligible=alert_decision.eligible,
+                    )
+                    if stored_item.get("whole_phone_confidence_passed") and not stored_item.get("hard_reject_flags"):
+                        metric["viable_whole_phones"].add(item_id)
+                    if alert_decision.tier:
+                        tier_rank = {"REVIEW": 1, "PROFITABLE": 2, "GEM": 3}
+                        previous = metric["tiers"].get(item_id)
+                        if previous is None or tier_rank[alert_decision.tier] > tier_rank[previous]:
+                            metric["tiers"][item_id] = alert_decision.tier
 
                 if stored_item.get("fresh_for_active_queue"):
                     fresh_items_found += 1
                 if stored_item.get("stale"):
                     stale_items_seen += 1
                 if item.get("status") == "rejected":
+                    for search_id in item_search_ids.get(item_id, set()):
+                        storage.set_shared_scan_notification_status(search_id, item_id, "not_eligible")
                     _record_decision_trace(
                         scan_cycle_id=scan_cycle_id,
                         counters=counters,
@@ -4139,17 +5717,13 @@ async def _scan_shared_once_unlocked(
                 elif _is_priority_review_candidate(stored_item):
                     priority_review += 1
 
-                should_alert = (
-                    notify
-                    and resolved.alerts_enabled
-                    and resolved.discord_enabled_for_alerts
-                    and resolved.notify_best_finds
-                    and stored_item.get("status") == "candidate"
-                    and should_notify_item(stored_item, result, resolved)
-                    and not result.hard_reject_flags
-                    and stored_item.get("user_status") != "ignored"
-                    and not storage.was_alerted_for_user(user_id, stored_item["item_id"])
-                    and bool(resolved.resolved_discord_webhook_url)
+                should_alert, notification_block_reason, was_deduplicated = _notification_delivery_gate(
+                    stored_item,
+                    result,
+                    resolved,
+                    decision=alert_decision,
+                    notify=notify,
+                    user_id=user_id,
                 )
                 alert_block_reasons = [] if should_alert else _alert_block_reasons(stored_item, result, resolved)
                 _record_decision_trace(
@@ -4162,15 +5736,63 @@ async def _scan_shared_once_unlocked(
                     alert_block_reasons=alert_block_reasons,
                 )
                 if not should_alert:
+                    for search_id in item_search_ids.get(item_id, set()):
+                        storage.set_shared_scan_notification_status(
+                            search_id, item_id, "blocked" if notification_block_reason else "not_eligible",
+                        )
+                    if notification_block_reason and notification_block_reason not in {"retry_backoff", "permanent_delivery_failure"}:
+                        _record_notification_skip(
+                            resolved,
+                            item_id=stored_item["item_id"],
+                            scan_cycle_id=scan_cycle_id,
+                            notification_type=(alert_decision.tier or "suppressed").lower(),
+                            reason=notification_block_reason,
+                            deduplicated=was_deduplicated,
+                            item=stored_item,
+                            decision=alert_decision,
+                            next_eligible_at=((datetime.now(timezone.utc) + timedelta(hours=1)).isoformat() if notification_block_reason == "review_hourly_limit" else None),
+                        )
                     continue
                 counters.alerts_attempted += 1
                 notifier = DiscordNotifier(resolved.resolved_discord_webhook_url)
-                if await _send_alert_notification(notifier, stored_item, user_id=user_id):
+                if await _send_alert_notification(
+                    notifier,
+                    stored_item,
+                    user_id=user_id,
+                    scan_cycle_id=scan_cycle_id,
+                    destination_source=str(resolved.notification_settings.get("webhook_source") or ""),
+                    decision=alert_decision,
+                ):
+                    for search_id in item_search_ids.get(item_id, set()):
+                        search_metrics[search_id]["alerts"].add(item_id)
+                        storage.set_shared_scan_notification_status(search_id, item_id, "sent")
                     storage.mark_alerted_for_user(user_id, stored_item["item_id"])
                     total_alerts_sent += 1
                     usage[user_id]["alerts_sent"] += 1
                 else:
+                    for search_id in item_search_ids.get(item_id, set()):
+                        storage.set_shared_scan_notification_status(search_id, item_id, "failed")
                     counters.alerts_failed += 1
+
+        for search_id, metric in search_metrics.items():
+            tier_counts = Counter(metric["tiers"].values())
+            storage.finish_shared_scan_search(
+                search_id,
+                unique_new_items=len(metric["unique_new_items"]),
+                duplicate_items=int(metric["duplicate_items"]),
+                viable_whole_phones=len(metric["viable_whole_phones"]),
+                gem_count=int(tier_counts["GEM"]),
+                profitable_count=int(tier_counts["PROFITABLE"]),
+                review_count=int(tier_counts["REVIEW"]),
+                alert_count=len(metric["alerts"]),
+                detail_fetch_attempts=len(metric["detail_attempts"]),
+                detail_fetch_successes=len(metric["detail_successes"]),
+                detail_fetch_failures=len(metric["detail_failures"]),
+                component_count=len(metric["components"]),
+                needs_data_count=len(metric["needs_data"]),
+                reject_count=len(metric["rejected"]),
+                alert_eligible_count=len(metric["alert_eligible"]),
+            )
 
         for resolved in resolved_users:
             if not resolved.user:
@@ -4205,6 +5827,11 @@ async def _scan_shared_once_unlocked(
                 ),
             )
 
+        if notify and background_mode:
+            for resolved in resolved_users:
+                catchup = await _run_actionable_catchup(resolved, scan_cycle_id=scan_cycle_id, ebay=ebay)
+                total_alerts_sent += int(catchup["sent"])
+
         storage.finish_shared_scan_run(
             run_id,
             status="completed",
@@ -4233,6 +5860,9 @@ async def _scan_shared_once_unlocked(
         "fresh_items_found": fresh_items_found,
         "stale_items_seen": stale_items_seen,
         "best_finds": best_finds,
+        "gem": int(counters.final_bucket_counts.get("gem", 0)),
+        "profitable": int(counters.final_bucket_counts.get("profitable", 0)),
+        "review": int(counters.final_bucket_counts.get("review", 0)),
         "priority_review": priority_review,
         "candidates": candidates,
         "rejected": rejected,
@@ -4250,24 +5880,428 @@ async def _scan_shared_once_unlocked(
     return summary
 
 
-async def _send_alert_notification(notifier: DiscordNotifier | None, item: dict[str, Any], *, user_id: int) -> bool:
-    if notifier is None:
-        logger.info("Alert notification skipped because notifier is not configured user_id=%s item_id=%s", user_id, item.get("item_id"))
+def _notification_provider_diagnostics(notifier: Any, *, default_category: str) -> tuple[str, str, int | None]:
+    category = str(getattr(notifier, "last_failure_category", "") or default_category)[:120]
+    message = str(getattr(notifier, "last_error_message", "") or category)[:500]
+    status = getattr(notifier, "last_provider_status", None)
+    return category, message, int(status) if isinstance(status, int) else None
+
+
+def _notification_destination_identity(user_id: int, discord_webhook: str | None) -> str:
+    identities: list[str] = []
+    if discord_webhook:
+        identities.append(destination_identity(discord_webhook))
+    notification = storage.get_user_notification_settings(user_id) or {}
+    if bool(notification.get("push_enabled", True)) and settings.push_configured:
+        if storage.list_push_subscriptions(user_id, enabled_only=True):
+            identities.append(push_destination_identity(user_id))
+    if not identities:
+        return destination_identity(discord_webhook)
+    if len(identities) == 1:
+        return identities[0]
+    digest = hashlib.sha256("|".join(identities).encode("utf-8")).hexdigest()
+    return f"channels:{digest}"
+
+
+def _record_notification_skip(
+    resolved: EffectiveUserSettings,
+    *,
+    item_id: str,
+    scan_cycle_id: int | None,
+    notification_type: str,
+    reason: str,
+    deduplicated: bool = False,
+    item: dict[str, Any] | None = None,
+    decision: AlertDecision | None = None,
+    next_eligible_at: str | None = None,
+) -> None:
+    if not resolved.user:
+        return
+    identity = _notification_destination_identity(int(resolved.user["id"]), resolved.resolved_discord_webhook_url)
+    snapshot = notification_snapshot(item or {"item_id": item_id}, decision, destination=identity) if decision else None
+    prior = storage.latest_successful_notification(int(resolved.user["id"]), item_id, identity) if deduplicated else None
+    status = (
+        "skipped_duplicate" if deduplicated
+        else "deferred_rate_limit" if reason == "review_hourly_limit"
+        else "cancelled_unavailable" if reason == "cancelled_unavailable"
+        else "skipped"
+    )
+    storage.create_notification_attempt(
+        user_id=int(resolved.user["id"]),
+        item_id=item_id,
+        scan_cycle_id=scan_cycle_id,
+        notification_type=notification_type,
+        skipped=True,
+        deduplicated=deduplicated,
+        failure_category=reason,
+        destination_source=str(resolved.notification_settings.get("webhook_source") or ""),
+        status=status,
+        fingerprint=snapshot.fingerprint if snapshot else "",
+        notification_tier=snapshot.tier if snapshot else notification_type.upper(),
+        effective_price=snapshot.effective_price if snapshot else None,
+        expected_profit=snapshot.expected_profit if snapshot else None,
+        expected_roi=snapshot.expected_roi if snapshot else None,
+        principal_damage=snapshot.principal_damage if snapshot else "unknown",
+        availability_state=snapshot.availability_state if snapshot else "unknown",
+        confidence=snapshot.confidence if snapshot else "low",
+        destination_identity=identity,
+        prior_success_attempt_id=int(prior["id"]) if prior else None,
+        fingerprint_match_reason=(str(prior.get("_match_reason") or "equivalent_or_stronger_success") if prior else ""),
+        next_eligible_at=next_eligible_at,
+    )
+
+
+def _notification_delivery_gate(
+    item: dict[str, Any],
+    result: Any,
+    resolved: EffectiveUserSettings,
+    *,
+    decision: AlertDecision | None = None,
+    notify: bool,
+    user_id: int,
+) -> tuple[bool, str, bool]:
+    decision = decision or evaluate_alert_decision(item, result, resolved)
+    if not notify or not decision.eligible or not decision.tier:
+        return False, "", False
+    notification = resolved.notification_settings
+    tier = decision.tier
+    if tier == "GEM" and not bool(notification.get("send_gem_immediately", resolved.notify_best_finds)):
+        return False, "gem_immediate_notifications_disabled", False
+    if tier == "PROFITABLE" and not bool(notification.get("send_profitable_immediately", True)):
+        return False, "profitable_immediate_notifications_disabled", False
+    review_mode = str(notification.get("review_delivery_mode") or "immediate").lower()
+    if tier == "REVIEW" and review_mode != "immediate":
+        return False, f"review_delivery_{review_mode}", False
+    now = datetime.now(timezone.utc)
+    dedupe_hours = max(1, int(notification.get("duplicate_suppression_hours", 72) or 72))
+    item_id = str(item.get("item_id") or "")
+    identity = _notification_destination_identity(user_id, resolved.resolved_discord_webhook_url)
+    recovered = storage.recover_stale_notification_claims(user_id, item_id, identity, now=now)
+    if recovered:
+        logger.warning("Recovered expired notification claims user_id=%s item_id=%s attempt_ids=%s", user_id, item_id, recovered)
+    current = notification_snapshot(item, decision, destination=identity)
+    prior = storage.latest_successful_notification(user_id, item_id, identity)
+    prior_at = _parse_utc_datetime(str((prior or {}).get("successful_at") or (prior or {}).get("updated_at") or ""))
+    if prior and prior_at and (now - prior_at).total_seconds() <= dedupe_hours * 3600:
+        reason = successful_dedupe_reason(
+            current,
+            prior,
+            price_amount=float(notification.get("meaningful_price_drop_amount", 20) or 0),
+            price_percent=float(notification.get("meaningful_price_drop_percent", 0.05) or 0),
+            profit_amount=float(notification.get("meaningful_profit_increase_amount", 25) or 0),
+            profit_percent=float(notification.get("meaningful_profit_increase_percent", 0.15) or 0),
+            roi_amount=float(notification.get("meaningful_roi_increase", 0.10) or 0),
+        )
+        if reason:
+            prior["_match_reason"] = reason
+            return False, "already_alerted", True
+    latest_failure = next(
+        (
+            entry for entry in storage.list_notification_attempts(user_id=user_id, limit=500)
+            if str(entry.get("item_id") or "") == item_id and bool(entry.get("failed"))
+            and str(entry.get("fingerprint") or "") in {"", current.fingerprint}
+        ),
+        None,
+    )
+    if latest_failure:
+        if int(latest_failure.get("retry_count") or 0) >= 5:
+            return False, "permanent_delivery_failure", False
+        retry_at = _parse_utc_datetime(str(latest_failure.get("next_eligible_at") or ""))
+        if retry_at and retry_at > now:
+            return False, "retry_backoff", False
+    if tier == "REVIEW":
+        attempts = storage.list_notification_attempts(user_id=user_id, limit=500)
+        max_review = max(0, int(notification.get("max_review_alerts_per_hour", 2) or 0))
+        recent_review = sum(
+            1
+            for attempt in attempts
+            if str(attempt.get("notification_type") or "").lower() == "review"
+            and bool(attempt.get("sent"))
+            and (created := _parse_utc_datetime(str(attempt.get("created_at") or "")))
+            and (now - created).total_seconds() <= 3600
+        )
+        if max_review == 0 or recent_review >= max_review:
+            return False, "review_hourly_limit", False
+    if not bool(resolved.notification_settings.get("notification_ready")):
+        return False, str(resolved.notification_settings.get("notification_block_reason") or "webhook_missing"), False
+    return True, "", False
+
+
+async def _send_alert_notification(
+    notifier: DiscordNotifier | None,
+    item: dict[str, Any],
+    *,
+    user_id: int,
+    scan_cycle_id: int | None,
+    destination_source: str,
+    decision: AlertDecision | None = None,
+    source: str = "live_scan",
+) -> bool:
+    decision = decision or AlertDecision(
+        eligible=True, tier=str(item.get("alert_tier") or "REVIEW"),
+        expected_profit=float(item.get("profit_mid") or 0), expected_roi=0,
+    )
+    identity = _notification_destination_identity(user_id, notifier.webhook_url if notifier else None)
+    snapshot = notification_snapshot(item, decision, destination=identity)
+    history = storage.list_notification_attempts(user_id=user_id, limit=500)
+    previous_failure = next((entry for entry in history if entry.get("item_id") == snapshot.item_id and entry.get("failed")), None)
+    retry_count = min(5, int(previous_failure.get("retry_count") or 0) + 1) if previous_failure else 0
+    prior_success = storage.latest_successful_notification(user_id, snapshot.item_id, identity)
+    effective_source = source
+    if source == "live_scan" and prior_success:
+        prior_tier = str(prior_success.get("notification_tier") or prior_success.get("notification_type") or "").upper()
+        tier_rank = {"REVIEW": 1, "PROFITABLE": 2, "GEM": 3}
+        if tier_rank.get(snapshot.tier, 0) > tier_rank.get(prior_tier, 0):
+            effective_source = "tier_upgrade"
+        elif float(prior_success.get("effective_price") or 0) > snapshot.effective_price:
+            effective_source = "price_drop_realert"
+    attempt_id = storage.create_notification_attempt(
+        user_id=user_id,
+        item_id=str(item.get("item_id") or "") or None,
+        scan_cycle_id=scan_cycle_id,
+        notification_type=str(item.get("alert_tier") or "gem").lower(),
+        attempted=True,
+        destination_source=destination_source,
+        status="pending",
+        fingerprint=snapshot.fingerprint,
+        notification_tier=snapshot.tier,
+        effective_price=snapshot.effective_price,
+        expected_profit=snapshot.expected_profit,
+        expected_roi=snapshot.expected_roi,
+        principal_damage=snapshot.principal_damage,
+        availability_state=snapshot.availability_state,
+        confidence=snapshot.confidence,
+        destination_identity=snapshot.destination_identity,
+        source=effective_source,
+        retry_count=retry_count,
+        parent_attempt_id=int(previous_failure["id"]) if previous_failure else None,
+        claim=True,
+    )
+    if attempt_id is None:
+        logger.info("Notification already claimed user_id=%s item_id=%s", user_id, item.get("item_id"))
         return False
     polling_status.notification_attempted()
-    try:
-        sent = await notifier.send_deal(item)
-    except Exception:
-        logger.exception("Alert notification send failed user_id=%s item_id=%s", user_id, item.get("item_id"))
+    discord_sent = False
+    discord_category = ""
+    discord_message = ""
+    provider_status = None
+    if notifier is not None:
+        try:
+            discord_sent = bool(await notifier.send_deal(item))
+        except Exception as exc:
+            discord_category = "provider_exception"
+            discord_message = type(exc).__name__
+        if not discord_sent and not discord_category:
+            discord_category, discord_message, provider_status = _notification_provider_diagnostics(
+                notifier,
+                default_category="provider_rejected",
+            )
+        if discord_sent:
+            provider_status = getattr(notifier, "last_provider_status", None)
+
+    push_result = await asyncio.to_thread(
+        send_push_to_user,
+        storage,
+        settings,
+        user_id=user_id,
+        item=item,
+        tier=decision.tier or str(item.get("alert_tier") or "REVIEW"),
+        scan_cycle_id=scan_cycle_id,
+    )
+    sent = discord_sent or push_result.sent
+    if not sent:
+        category = discord_category or ("push_delivery_failed" if push_result.selected else "no_delivery_channel")
+        message = discord_message or (
+            f"push selected={push_result.selected} failed={push_result.failed} disabled={push_result.disabled}"
+        )
+        storage.finish_notification_attempt(
+            attempt_id,
+            sent=False,
+            failed=True,
+            failure_category=category,
+            error_message=message,
+            provider_status=provider_status,
+            next_eligible_at=(datetime.now(timezone.utc) + timedelta(seconds=min(1800, 60 * (2 ** retry_count)))).isoformat(),
+        )
+        logger.warning(
+            "Alert notification send failed user_id=%s item_id=%s discord_category=%s push=%s",
+            user_id,
+            item.get("item_id"),
+            discord_category,
+            push_result.as_dict(),
+        )
         polling_status.notification_failed()
         return False
-    if not sent:
-        logger.warning("Alert notification was not sent user_id=%s item_id=%s", user_id, item.get("item_id"))
-        polling_status.notification_failed()
+    finalized = storage.finish_notification_attempt(
+        attempt_id,
+        sent=True,
+        failed=False,
+        provider_status=int(provider_status) if isinstance(provider_status, int) else None,
+    )
+    if not finalized:
+        logger.warning("Notification claim expired before success finalization user_id=%s item_id=%s attempt_id=%s", user_id, item.get("item_id"), attempt_id)
         return False
     polling_status.notification_sent()
-    logger.info("Alert notification sent user_id=%s item_id=%s", user_id, item.get("item_id"))
+    logger.info(
+        "Alert notification sent user_id=%s item_id=%s discord_sent=%s push=%s",
+        user_id,
+        item.get("item_id"),
+        discord_sent,
+        push_result.as_dict(),
+    )
     return True
+
+
+async def _run_actionable_catchup(
+    resolved: EffectiveUserSettings,
+    *,
+    scan_cycle_id: int | None,
+    ebay: EbayClient | None = None,
+) -> dict[str, int]:
+    """Drain a bounded, restart-safe rollout queue from current stored state."""
+    if not resolved.user or not bool(resolved.notification_settings.get("catchup_enabled", True)):
+        return {"candidates": 0, "attempted": 0, "sent": 0}
+    user_id = int(resolved.user["id"])
+    delivered = storage.successfully_notified_item_ids(user_id)
+    candidates: list[tuple[dict[str, Any], AlertDecision]] = []
+    for item in storage.list_user_items(user_id, limit=500, include_stale=False, **resolved.freshness_kwargs()):
+        item = _decorate_item_for_user(item, user_id=user_id, pricing_context=_cached_pricing_context_for_user(user_id))
+        decision = evaluate_alert_decision(item, SimpleNamespace(), resolved)
+        allowed = {"GEM", "PROFITABLE"}
+        if bool(resolved.notification_settings.get("catchup_include_review", False)):
+            allowed.add("REVIEW")
+        if decision.eligible and decision.tier in allowed and str(item.get("item_id") or "") not in delivered:
+            candidates.append((item, decision))
+    rank = {"GEM": 0, "PROFITABLE": 1, "REVIEW": 2}
+    candidates.sort(key=lambda pair: (
+        rank.get(str(pair[1].tier), 9), -pair[1].expected_profit, -pair[1].expected_roi,
+        -((_parse_utc_datetime(str(pair[0].get("item_origin_at") or pair[0].get("found_at") or "")) or datetime.min.replace(tzinfo=timezone.utc)).timestamp()),
+    ))
+    attempted = sent = 0
+    batch_size = max(1, min(50, int(resolved.notification_settings.get("catchup_batch_size", 5) or 5)))
+    for item, decision in candidates:
+        if attempted >= batch_size:
+            break
+        if ebay is not None:
+            detail = await _fetch_selective_detail(ebay, item)
+            if not detail:
+                logger.info("Catch-up skipped because availability could not be rechecked item_id=%s", item.get("item_id"))
+                continue
+            item = _apply_availability_and_auction_policy({**item, **_detail_fields(detail)})
+            storage.upsert_user_item(user_id, item)
+            decision = evaluate_alert_decision(item, SimpleNamespace(), resolved)
+            if not decision.eligible or decision.tier not in allowed:
+                _record_notification_skip(
+                    resolved, item_id=str(item["item_id"]), scan_cycle_id=scan_cycle_id,
+                    notification_type=str(decision.tier or "suppressed").lower(),
+                    reason="cancelled_unavailable" if str(item.get("availability_status") or "").lower() in {"sold", "ended", "unavailable"} else "catchup_no_longer_actionable",
+                    item=item, decision=decision,
+                )
+                continue
+        should_send, reason, deduplicated = _notification_delivery_gate(
+            item, SimpleNamespace(), resolved, decision=decision, notify=True, user_id=user_id,
+        )
+        if not should_send:
+            if reason and reason not in {"retry_backoff", "permanent_delivery_failure"}:
+                _record_notification_skip(
+                    resolved, item_id=str(item["item_id"]), scan_cycle_id=scan_cycle_id,
+                    notification_type=str(decision.tier or "suppressed").lower(), reason=reason,
+                    deduplicated=deduplicated, item=item, decision=decision,
+                )
+            continue
+        attempted += 1
+        enriched = {**item, "alert_tier": decision.tier, "alert_decision": decision.as_dict()}
+        if await _send_alert_notification(
+            DiscordNotifier(resolved.resolved_discord_webhook_url), enriched,
+            user_id=user_id, scan_cycle_id=scan_cycle_id,
+            destination_source=str(resolved.notification_settings.get("webhook_source") or ""),
+            decision=decision, source="actionable_tier_rollout_catchup_v1",
+        ):
+            storage.mark_alerted_for_user(user_id, str(item["item_id"]))
+            sent += 1
+    return {"candidates": len(candidates), "attempted": attempted, "sent": sent}
+
+
+TEST_NOTIFICATION_RATE_LIMIT_SECONDS = 60
+TEST_NOTIFICATION_MESSAGE = "Notifierr test notification — configuration is working"
+
+
+async def _send_test_notification(resolved: EffectiveUserSettings) -> dict[str, Any]:
+    if not resolved.user:
+        raise HTTPException(status_code=400, detail="No notification user is available")
+    user_id = int(resolved.user["id"])
+    recent = storage.latest_attempted_notification(user_id, "test")
+    recent_at = _parse_utc_datetime((recent or {}).get("created_at"))
+    if recent_at and (datetime.now(timezone.utc) - recent_at).total_seconds() < TEST_NOTIFICATION_RATE_LIMIT_SECONDS:
+        storage.create_notification_attempt(
+            user_id=user_id,
+            notification_type="test",
+            skipped=True,
+            failure_category="rate_limited",
+            destination_source=str(resolved.notification_settings.get("webhook_source") or ""),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"Test notifications are limited to one every {TEST_NOTIFICATION_RATE_LIMIT_SECONDS} seconds",
+        )
+    if not bool(resolved.notification_settings.get("notification_ready")):
+        reason = str(resolved.notification_settings.get("notification_block_reason") or "webhook_missing")
+        storage.create_notification_attempt(
+            user_id=user_id,
+            notification_type="test",
+            skipped=True,
+            failure_category=reason,
+            destination_source=str(resolved.notification_settings.get("webhook_source") or ""),
+        )
+        raise HTTPException(status_code=400, detail=f"Notification configuration is not ready: {reason}")
+
+    destination_source = str(resolved.notification_settings.get("webhook_source") or "")
+    notifier = DiscordNotifier(resolved.resolved_discord_webhook_url)
+    attempt_id = storage.create_notification_attempt(
+        user_id=user_id,
+        notification_type="test",
+        attempted=True,
+        destination_source=destination_source,
+    )
+    polling_status.notification_attempted()
+    try:
+        sent = await notifier.send_message(TEST_NOTIFICATION_MESSAGE)
+    except Exception as exc:
+        category = "provider_exception"
+        storage.finish_notification_attempt(
+            attempt_id,
+            sent=False,
+            failed=True,
+            failure_category=category,
+            error_message=type(exc).__name__,
+        )
+        polling_status.notification_failed()
+        logger.warning("Test notification failed user_id=%s category=%s", user_id, category)
+        return {"attempted": True, "sent": False, "failed": True, "error": "Discord delivery failed"}
+    if not sent:
+        category, message, provider_status = _notification_provider_diagnostics(
+            notifier,
+            default_category="provider_rejected",
+        )
+        storage.finish_notification_attempt(
+            attempt_id,
+            sent=False,
+            failed=True,
+            failure_category=category,
+            error_message=message,
+            provider_status=provider_status,
+        )
+        polling_status.notification_failed()
+        return {"attempted": True, "sent": False, "failed": True, "error": "Discord delivery failed"}
+    provider_status = getattr(notifier, "last_provider_status", None)
+    storage.finish_notification_attempt(
+        attempt_id,
+        sent=True,
+        failed=False,
+        provider_status=int(provider_status) if isinstance(provider_status, int) else None,
+    )
+    polling_status.notification_sent()
+    return {"attempted": True, "sent": True, "failed": False, "error": ""}
 
 
 async def _refresh_stored_availability(ebay: EbayClient, resolved: EffectiveUserSettings) -> int:
@@ -4315,6 +6349,37 @@ async def _background_poll() -> None:
         cycle += 1
         interval_details = _resolve_background_poll_sleep_seconds(mode="shared_background" if settings.auth_required else "local_background")
         sleep_seconds = int(interval_details["final_seconds"])
+        lease_now = utc_now()
+        is_leader, leadership_lease, owner_state = _acquire_background_leadership(lease_now)
+        if not is_leader:
+            polling_status.polling_enabled(False)
+            standby_sleep = min(sleep_seconds, BACKGROUND_LEASE_RENEW_SECONDS)
+            logger.info(
+                "Background poll standby worker_id=%s lease_state=standby effective_interval_seconds=%s "
+                "retry_seconds=%s owner_state=%s owner_reason=%s",
+                WORKER_ID, sleep_seconds, standby_sleep,
+                getattr(owner_state, "state", None),
+                getattr(owner_state, "reason", None),
+            )
+            storage.update_worker_heartbeat(
+                worker_name=worker_name,
+                process_id=_process_id(),
+                hostname=_hostname(),
+                started_at=_background_worker_started_at,
+                status="standby",
+                last_error=str(getattr(owner_state, "reason", "") or ""),
+                next_wake_at=(datetime.now(timezone.utc) + timedelta(seconds=standby_sleep)).isoformat(),
+            )
+            await asyncio.sleep(standby_sleep)
+            continue
+        logger.info(
+            "Background poll leadership acquired worker_id=%s ttl_seconds=%s renew_seconds=%s takeover_reason=%s",
+            WORKER_ID,
+            BACKGROUND_LEASE_TTL_SECONDS,
+            BACKGROUND_LEASE_RENEW_SECONDS,
+            (leadership_lease or {}).get("takeover_reason") or "",
+        )
+        renewal_task = asyncio.create_task(_background_leadership_renewer())
         last_cycle_id: int | None = None
         current_cycle_mode = "shared_background" if settings.auth_required else "local_background"
         current_user_id: int | None = None
@@ -4367,12 +6432,18 @@ async def _background_poll() -> None:
                     current_keywords = []
                     for resolved in enabled_users:
                         current_keywords.extend(list(resolved.keywords or []))
-                    summary = await scan_shared_once(
-                        limit=settings.max_results_per_keyword,
-                        notify=True,
-                        triggered_by_user=None,
-                        background_mode=True,
-                        cycle_mode="shared_background",
+                    summary = await _await_with_background_leadership(
+                        asyncio.create_task(
+                            scan_shared_once(
+                                limit=settings.max_results_per_keyword,
+                                notify=True,
+                                triggered_by_user=None,
+                                background_mode=True,
+                                cycle_mode="shared_background",
+                                offload_scan_work=True,
+                            )
+                        ),
+                        renewal_task,
                     )
                     last_cycle_id = storage.list_scan_cycles(limit=1)[0]["id"] if storage.list_scan_cycles(limit=1) else None
                     if summary.get("reason") == "no_active_users":
@@ -4415,12 +6486,18 @@ async def _background_poll() -> None:
                     )
                 elif _background_poll_is_active(resolved):
                     current_users_scanned = 1
-                    summary = await scan_once(
-                        resolved.keywords,
-                        settings.max_results_per_keyword,
-                        notify=True,
-                        resolved_settings=resolved,
-                        cycle_mode="local_background",
+                    summary = await _await_with_background_leadership(
+                        asyncio.create_task(
+                            scan_once(
+                                resolved.keywords,
+                                settings.max_results_per_keyword,
+                                notify=True,
+                                resolved_settings=resolved,
+                                cycle_mode="local_background",
+                                offload_scan_work=True,
+                            )
+                        ),
+                        renewal_task,
                     )
                     last_cycle_id = storage.list_scan_cycles(limit=1)[0]["id"] if storage.list_scan_cycles(limit=1) else None
                     logger.info("Background scan summary alerts_sent=%s summary=%s", summary.get("alerts_sent", 0), summary)
@@ -4484,7 +6561,7 @@ async def _background_poll() -> None:
             polling_status.cycle_failed(exc)
             sleep_seconds = max(int(settings.ebay_rate_limit_backoff_seconds), int(exc.retry_after_seconds))
             interval_details = {
-                "config_seconds": _positive_int(settings.background_poll_seconds, MIN_BACKGROUND_POLL_SECONDS),
+                "config_seconds": resolve_poll_interval(configured=settings.background_poll_seconds).configured_seconds,
                 "user_seconds": interval_details.get("user_seconds"),
                 "final_seconds": sleep_seconds,
                 "interval_source": "ebay_rate_limit_backoff",
@@ -4505,11 +6582,38 @@ async def _background_poll() -> None:
                 last_error=f"{type(exc).__name__}: {exc}",
                 next_wake_at=next_wake_at,
             )
+        except BackgroundLeadershipLostError as exc:
+            logger.warning("Background poll leadership lost worker_id=%s error=%s", WORKER_ID, exc)
+            polling_status.polling_enabled(False)
+            _mark_background_leadership_lost(datetime.now(timezone.utc))
+            sleep_seconds = BACKGROUND_LEASE_RENEW_SECONDS
+            interval_details = {
+                "config_seconds": resolve_poll_interval(configured=settings.background_poll_seconds).configured_seconds,
+                "user_seconds": interval_details.get("user_seconds"),
+                "final_seconds": sleep_seconds,
+                "interval_source": "leadership_recheck",
+            }
+            storage.update_worker_heartbeat(
+                worker_name=worker_name,
+                process_id=_process_id(),
+                hostname=_hostname(),
+                started_at=_background_worker_started_at,
+                status="standby",
+                last_cycle_id=last_cycle_id,
+                last_error=str(exc),
+            )
+            if not renewal_task.done():
+                renewal_task.cancel()
+            await asyncio.gather(renewal_task, return_exceptions=True)
+            await asyncio.sleep(sleep_seconds)
+            continue
         except Exception as exc:
             polling_status.cycle_failed(exc)
             logger.exception("Background poll cycle failed cycle=%s", cycle)
             interval_details = _resolve_background_poll_sleep_seconds(mode=current_cycle_mode, current_settings=current_settings_for_cycle)
-            sleep_seconds = int(interval_details["final_seconds"])
+            base_seconds = int(interval_details["final_seconds"])
+            failures = int(polling_status.snapshot().get("consecutive_failures") or 1)
+            sleep_seconds = min(1200, max(base_seconds, 30 * (2 ** min(failures - 1, 5))))
             storage.update_worker_heartbeat(
                 worker_name=worker_name,
                 process_id=_process_id(),
@@ -4532,6 +6636,13 @@ async def _background_poll() -> None:
         )
         polling_status.sleep_scheduled(sleep_seconds)
         next_wake_at = (datetime.now(timezone.utc) + timedelta(seconds=sleep_seconds)).isoformat()
+        if not _renew_background_leadership():
+            logger.warning("Background poll leadership lost worker_id=%s lease_state=lost", WORKER_ID)
+            if not renewal_task.done():
+                renewal_task.cancel()
+            await asyncio.gather(renewal_task, return_exceptions=True)
+            await asyncio.sleep(BACKGROUND_LEASE_RENEW_SECONDS)
+            continue
         storage.update_worker_heartbeat(
             worker_name=worker_name,
             process_id=_process_id(),
@@ -4552,33 +6663,21 @@ async def _background_poll() -> None:
             settings.auth_required,
             settings.background_poll_enabled,
         )
-        await asyncio.sleep(sleep_seconds)
+        try:
+            await _sleep_with_background_leadership(sleep_seconds, renewal_task)
+        except BackgroundLeadershipLostError as exc:
+            logger.warning("Background poll leadership lost while sleeping worker_id=%s error=%s", WORKER_ID, exc)
+            polling_status.polling_enabled(False)
+            _mark_background_leadership_lost(datetime.now(timezone.utc))
+            await asyncio.sleep(BACKGROUND_LEASE_RENEW_SECONDS)
+        finally:
+            if not renewal_task.done():
+                renewal_task.cancel()
+            await asyncio.gather(renewal_task, return_exceptions=True)
 
 
 def should_notify_item(item: dict[str, Any], result: Any, current_settings: Any) -> bool:
-    if item.get("status") != "candidate" or result.score < current_settings.min_score_to_alert:
-        return False
-    if _is_unavailable(item) or _is_auction_only(item):
-        return False
-    if item.get("stale"):
-        return False
-    if not item.get("fresh_for_alert", True):
-        return False
-    if item.get("item_age_minutes") is not None and item["item_age_minutes"] > getattr(current_settings, "max_alert_item_age_minutes", 180):
-        return False
-    if item.get("user_status") in {"ignored", "rejected"}:
-        return False
-    if result.hard_reject_flags:
-        return False
-    if not getattr(result, "whole_phone_confidence_passed", False):
-        return False
-    if not getattr(result, "has_repair_issue", False):
-        return False
-    if not getattr(result, "estimated_profit_available", True):
-        return False
-    if hasattr(result, "alert_eligible"):
-        return bool(result.alert_eligible)
-    return result.estimated_profit >= current_settings.min_profit_to_alert
+    return evaluate_alert_decision(item, result, current_settings).tier == "GEM"
 
 
 def _is_fresh_best_find(item: dict[str, Any], result: Any, current_settings: Any) -> bool:
@@ -4625,7 +6724,7 @@ def _has_reviewable_description_evidence(item: dict[str, Any]) -> bool:
             or (strong_proof_count >= 1 and has_description_evidence)
             or (
                 has_description_evidence
-                and float(item.get("whole_phone_confidence_score") or 0) >= 7
+                and float(item.get("whole_phone_score") or 0) >= 7
             )
         )
     )
@@ -4771,6 +6870,36 @@ def _is_needs_data_item(item: dict[str, Any]) -> bool:
     )
 
 
+def _is_missed_opportunity(item: dict[str, Any]) -> bool:
+    decision = item.get("alert_decision") or {}
+    if item.get("stale") or _is_unavailable(item) or _has_hard_or_component_block(item):
+        return False
+    expected = float(decision.get("expected_profit") or item.get("profit_mid") or 0)
+    upside = float(decision.get("upside_profit") or item.get("profit_high") or 0)
+    if expected <= 0 and upside <= 0:
+        return False
+    if decision.get("tier") in {"PROFITABLE", "REVIEW"}:
+        return True
+    soft_blocks = [
+        reason
+        for reason in decision.get("blocking_reasons") or []
+        if reason
+        in {
+            "MODEL_UNKNOWN",
+            "RESALE_UNAVAILABLE",
+            "EXPECTED_PROFIT_BELOW_REVIEW_MINIMUM",
+            "ROI_BELOW_REVIEW_MINIMUM",
+            "WHOLE_PHONE_NOT_PROBABLE",
+        }
+    ]
+    return len(set(soft_blocks)) <= 2 and bool(
+        item.get("pricing_warning")
+        or item.get("storage_resale_warning")
+        or item.get("manual_review_needed")
+        or not item.get("raw_description")
+    )
+
+
 def _alert_block_reasons(item: dict[str, Any], result: Any, current_settings: Any) -> list[str]:
     reasons: list[str] = []
     if item.get("status") != "candidate":
@@ -4787,10 +6916,6 @@ def _alert_block_reasons(item: dict[str, Any], result: Any, current_settings: An
         reasons.append("not_fresh_for_alert")
     if item.get("item_age_minutes") is not None and item["item_age_minutes"] > getattr(current_settings, "max_alert_item_age_minutes", 180):
         reasons.append("item_age_above_alert_window")
-    if item.get("user_status") in {"ignored", "rejected"}:
-        reasons.append(f"user_status_{item.get('user_status')}")
-    if getattr(result, "hard_reject_flags", []):
-        reasons.append("hard_reject_flags")
     if not getattr(result, "whole_phone_confidence_passed", False):
         reasons.append("whole_phone_confidence_failed")
     if not getattr(result, "has_repair_issue", False):
@@ -4799,9 +6924,8 @@ def _alert_block_reasons(item: dict[str, Any], result: Any, current_settings: An
         reasons.append("estimated_profit_unavailable")
     if hasattr(result, "alert_eligible") and not bool(result.alert_eligible):
         reasons.append("result_alert_ineligible")
-    elif not hasattr(result, "alert_eligible") and getattr(result, "estimated_profit", 0) < current_settings.min_profit_to_alert:
-        reasons.append("profit_below_threshold")
-    return list(dict.fromkeys(reasons))
+    decision = evaluate_alert_decision(item, result, current_settings)
+    return list(dict.fromkeys([*reasons, *decision.blocking_reasons]))
 
 
 def _missing_data_reasons(item: dict[str, Any]) -> list[str]:
@@ -4827,6 +6951,9 @@ def _missing_data_reasons(item: dict[str, Any]) -> list[str]:
             "back_glass_cracked",
             "camera_lens_cracked",
             "charging_port_issue",
+            "camera_fault",
+            "face_id_issue",
+            "digitizer_issue",
         }
     ):
         reasons.append("specific_repair_issue_missing")
@@ -4858,8 +6985,13 @@ def _carrier_status(item: dict[str, Any], positive_flags: list[str]) -> str:
 def _normalized_bucket(item: dict[str, Any], result: Any, current_settings: Any) -> str:
     if item.get("status") == "rejected" or item.get("user_status") == "rejected":
         return "avoid"
-    if should_notify_item(item, result, current_settings):
+    decision = evaluate_alert_decision(item, result, current_settings)
+    if decision.tier == "GEM":
         return "gem"
+    if decision.tier == "PROFITABLE":
+        return "profitable"
+    if decision.tier == "REVIEW":
+        return "review"
     if _is_priority_review_candidate(item):
         return "good"
     if _is_needs_data_item(item):
@@ -4898,6 +7030,9 @@ def _build_decision_trace(
             "back_glass_cracked",
             "camera_lens_cracked",
             "charging_port_issue",
+            "camera_fault",
+            "face_id_issue",
+            "digitizer_issue",
         }
     ]
     carrier_status = _carrier_status(item, positive_flags)
@@ -4905,6 +7040,7 @@ def _build_decision_trace(
     blocking_rules = alert_block_reasons if alert_block_reasons is not None else _alert_block_reasons(item, result, current_settings)
     manual_reasons = _manual_reason_parts(item)
     normalized_bucket = _normalized_bucket(item, result, current_settings)
+    alert_decision = evaluate_alert_decision(item, result, current_settings)
     current_status = current_app_status if current_app_status is not None else item.get("status")
     current_bucket = current_app_bucket if current_app_bucket is not None else current_status
     return {
@@ -4913,8 +7049,11 @@ def _build_decision_trace(
         "source": "ebay",
         "scan_run_id": scan_cycle_id,
         "scan_cycle_id": scan_cycle_id,
+        "decision_identity": {key: item.get(key) or "" for key in ("scorer_hash", "rules_hash", "repair_hash", "resale_hash")},
         "detected": {
             "model": item.get("model") or "unknown",
+            "item_type": item.get("item_type") or "ambiguous",
+            "item_type_reason": item.get("item_type_reason") or "",
             "storage": item.get("storage_capacity"),
             "carrier_status": carrier_status,
             "condition": str(item.get("condition") or item.get("resale_condition_used") or ""),
@@ -4930,6 +7069,9 @@ def _build_decision_trace(
             "clean_activation_signals": description_signals.get("clean_activation_signals") or [],
             "repair_detail_signals": description_signals.get("repair_detail_signals") or [],
             "component_reject_signals": description_signals.get("component_reject_signals") or [],
+            "detail_fetch_status": item.get("detail_fetch_status") or "not_requested",
+            "detail_fetch_reason": item.get("detail_fetch_reason") or "",
+            "detail_fetch_recovered_fields": item.get("detail_fetch_recovered_fields") or [],
         },
         "pricing": {
             "price": float(item.get("price") or 0),
@@ -4954,16 +7096,21 @@ def _build_decision_trace(
             "score": float(item.get("score") or getattr(result, "score", 0) or 0),
             "confidence": float(item.get("whole_phone_score") or 0),
             "alert_eligible": bool(item.get("alert_eligible")),
+            "tier_eligible": alert_decision.eligible,
+            "alert_tier": alert_decision.tier,
             "manual_review_needed": bool(item.get("manual_review_needed")),
         },
+        "alert_decision": alert_decision.as_dict(),
         "reasons": {
             "positive": positive_flags,
             "negative": [*soft_risks, *hard_risks, *classification_flags],
             "missing_data": missing_data,
             "blocking_rules": blocking_rules,
-            "non_blocking_warnings": [
-                reason for reason in manual_reasons if reason not in blocking_rules and reason not in missing_data
-            ],
+            "structured_blocking_reasons": alert_decision.blocking_reasons,
+            "non_blocking_warnings": list(dict.fromkeys([
+                *alert_decision.soft_warnings,
+                *(reason for reason in manual_reasons if reason not in blocking_rules and reason not in missing_data),
+            ])),
         },
     }
 
@@ -4997,18 +7144,51 @@ def _record_decision_trace(
 
 
 def _should_fetch_selective_detail(listing: dict[str, Any], result: Any, current_settings: Any) -> bool:
+    return bool(_detail_refresh_reasons(listing, result, current_settings))
+
+
+def _detail_refresh_reasons(listing: dict[str, Any], result: Any, current_settings: Any) -> list[str]:
     if not _is_selective_refresh_candidate({**listing, **result.as_item_fields()}):
-        return False
+        return []
+    if getattr(result, "hard_reject_flags", []):
+        return []
+    reasons: list[str] = []
     title = (listing.get("title") or "").lower()
     triggers = ("read description", "no ic", "board", "not original owner")
     if any(trigger in title for trigger in triggers):
-        return True
+        reasons.append("title_requests_detail")
+    if not str(listing.get("raw_description") or "").strip():
+        reasons.append("description_missing")
+    if not getattr(result, "storage_capacity", None):
+        reasons.append("storage_missing")
+    if not getattr(result, "model", None) or getattr(result, "model", "unknown") == "unknown":
+        reasons.append("exact_model_missing")
+    if not getattr(result, "has_repair_issue", False):
+        reasons.append("specific_defect_missing")
     proof_flags = {"powers_on", "clean_imei", "face_id_works"}
     if not proof_flags.intersection(set(getattr(result, "positive_flags", []) or [])):
-        return True
+        reasons.append("functionality_or_activation_missing")
+    if not re.search(r"\b(?:unlocked|verizon|at&t|att|t-?mobile|sprint|boost|cricket|metro)\b", title, re.IGNORECASE):
+        reasons.append("carrier_missing")
     close_score = getattr(result, "score", 0) >= current_settings.min_score_to_alert - 10
     close_profit = getattr(result, "profit_high", 0) >= current_settings.min_profit_to_alert
-    return bool(close_score or close_profit)
+    if (close_score or close_profit) and not reasons:
+        reasons.append("near_alert_threshold")
+    return list(dict.fromkeys(reasons))
+
+
+def _detail_fetch_fields(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    recovered = []
+    for key in ("raw_description", "condition", "availability_status", "buying_option_summary", "item_end_at"):
+        if not before.get(key) and after.get(key):
+            recovered.append(key)
+    raw = after.get("raw_json") or {}
+    details = raw.get("details") if isinstance(raw, dict) else {}
+    if isinstance(details, dict) and details:
+        for key in ("localizedAspects", "conditionDescription", "shortDescription"):
+            if details.get(key):
+                recovered.append(key)
+    return list(dict.fromkeys(recovered))
 
 
 async def _fetch_selective_detail(ebay: EbayClient, listing: dict[str, Any]) -> dict[str, Any]:
@@ -5029,6 +7209,7 @@ def _detail_fields(detail: dict[str, Any]) -> dict[str, Any]:
         for key, value in detail.items()
         if key in {
             "raw_description",
+            "condition",
             "availability_status",
             "buying_option_summary",
             "item_end_at",
@@ -5198,13 +7379,14 @@ def _auction_hours_remaining(item: dict[str, Any]) -> float | None:
     return (parsed.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds() / 3600
 
 
-def _background_poll_is_active(current_settings: Any) -> bool:
+def _background_poll_is_active(current_settings: Any, *, now: datetime | None = None) -> bool:
     start = _parse_clock_time(current_settings.background_poll_active_start)
     end = _parse_clock_time(current_settings.background_poll_active_end)
     if not start or not end:
         return True
     tz = _background_poll_timezone(current_settings.background_poll_timezone)
-    now_time = datetime.now(tz).time()
+    current = now or datetime.now(timezone.utc)
+    now_time = current.astimezone(tz).time()
     if start <= end:
         return start <= now_time <= end
     return now_time >= start or now_time <= end
@@ -5237,7 +7419,9 @@ def _parse_clock_time(value: Optional[str]) -> Optional[time]:
 
 def _set_item_status(user_id: int, item_id: str, user_status: str, *, ignored_reason: str = "") -> dict[str, Any]:
     try:
-        return storage.set_user_item_status(user_id, item_id, user_status, ignored_reason=ignored_reason)
+        updated = storage.set_user_item_status(user_id, item_id, user_status, ignored_reason=ignored_reason)
+        _dashboard_stats_cache.pop(int(user_id), None)
+        return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None
     except ValueError as exc:

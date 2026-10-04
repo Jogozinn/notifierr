@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError as SAIntegrityError
 from .config import DEFAULT_KEYWORDS
 from .db_models import metadata, scan_cycles, shared_scan_runs, shared_scan_searches, source_statuses, user_keywords, users
 from .scorer import now_iso
+from .outcomes import MONEY_FIELDS, actual_net_profit
 
 
 DEFAULT_MAX_ALERT_ITEM_AGE_MINUTES = 180
@@ -24,6 +25,7 @@ DEFAULT_USER_RISKY_SCORE_MIN = 35.0
 DEFAULT_USER_RISKY_SCORE_MAX = 69.99
 DEFAULT_USER_BACKGROUND_POLL_SECONDS = 300
 DEFAULT_USER_TIMEZONE = "America/New_York"
+NOTIFICATION_CLAIM_LEASE_SECONDS = 300  # Discord's request timeout is 15 seconds.
 LOCAL_FALLBACK_USER_EMAIL = "local@notifierr.local"
 
 
@@ -108,6 +110,12 @@ CREATE TABLE IF NOT EXISTS items (
     item_end_at TEXT,
     last_availability_checked_at TEXT,
     availability_note TEXT NOT NULL DEFAULT '',
+    detail_fetch_attempted_at TEXT,
+    detail_fetch_status TEXT NOT NULL DEFAULT 'not_requested',
+    detail_fetch_reason TEXT NOT NULL DEFAULT '',
+    detail_fetch_recovered_fields TEXT NOT NULL DEFAULT '[]',
+    detail_fetch_failure_reason TEXT NOT NULL DEFAULT '',
+    detail_fetch_retry_after TEXT,
     raw_json TEXT
 );
 
@@ -204,9 +212,32 @@ CREATE TABLE IF NOT EXISTS user_notification_settings (
     user_id INTEGER PRIMARY KEY,
     discord_webhook TEXT NOT NULL DEFAULT '',
     discord_enabled INTEGER NOT NULL DEFAULT 0,
+    push_enabled INTEGER NOT NULL DEFAULT 1,
+    use_global_discord_webhook INTEGER NOT NULL DEFAULT 0,
     alerts_enabled INTEGER NOT NULL DEFAULT 1,
     notify_best_finds INTEGER NOT NULL DEFAULT 1,
     notify_priority_review INTEGER NOT NULL DEFAULT 1,
+    send_gem_immediately INTEGER NOT NULL DEFAULT 1,
+    send_profitable_immediately INTEGER NOT NULL DEFAULT 1,
+    review_delivery_mode TEXT NOT NULL DEFAULT 'immediate',
+    max_review_alerts_per_hour INTEGER NOT NULL DEFAULT 2,
+    duplicate_suppression_hours INTEGER NOT NULL DEFAULT 72,
+    meaningful_price_drop_amount REAL NOT NULL DEFAULT 20,
+    meaningful_price_drop_percent REAL NOT NULL DEFAULT 0.05,
+    meaningful_profit_increase_amount REAL NOT NULL DEFAULT 25,
+    meaningful_profit_increase_percent REAL NOT NULL DEFAULT 0.15,
+    meaningful_roi_increase REAL NOT NULL DEFAULT 0.10,
+    catchup_enabled INTEGER NOT NULL DEFAULT 1,
+    catchup_batch_size INTEGER NOT NULL DEFAULT 5,
+    catchup_include_review INTEGER NOT NULL DEFAULT 0,
+    gem_min_expected_profit REAL NOT NULL DEFAULT 75,
+    profitable_min_expected_profit REAL NOT NULL DEFAULT 50,
+    review_min_expected_profit REAL NOT NULL DEFAULT 25,
+    review_min_upside_profit REAL NOT NULL DEFAULT 60,
+    gem_min_roi REAL NOT NULL DEFAULT 0.25,
+    profitable_min_roi REAL NOT NULL DEFAULT 0.15,
+    review_min_roi REAL NOT NULL DEFAULT 0.05,
+    max_listing_age_minutes INTEGER NOT NULL DEFAULT 360,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -264,6 +295,7 @@ CREATE TABLE IF NOT EXISTS user_item_corrections (
     corrected_storage_capacity TEXT,
     corrected_issue_type TEXT,
     corrected_part_cost REAL,
+    feedback_code TEXT NOT NULL DEFAULT '',
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -297,6 +329,12 @@ CREATE TABLE IF NOT EXISTS marketplace_items (
     item_end_at TEXT,
     last_availability_checked_at TEXT,
     availability_note TEXT NOT NULL DEFAULT '',
+    detail_fetch_attempted_at TEXT,
+    detail_fetch_status TEXT NOT NULL DEFAULT 'not_requested',
+    detail_fetch_reason TEXT NOT NULL DEFAULT '',
+    detail_fetch_recovered_fields TEXT NOT NULL DEFAULT '[]',
+    detail_fetch_failure_reason TEXT NOT NULL DEFAULT '',
+    detail_fetch_retry_after TEXT,
     UNIQUE(marketplace, marketplace_item_id)
 );
 
@@ -402,6 +440,13 @@ CREATE TABLE IF NOT EXISTS shared_scan_searches (
     subscribed_user_count INTEGER NOT NULL DEFAULT 0,
     items_returned INTEGER NOT NULL DEFAULT 0,
     api_calls_made INTEGER NOT NULL DEFAULT 0,
+    unique_new_items INTEGER NOT NULL DEFAULT 0,
+    duplicate_items INTEGER NOT NULL DEFAULT 0,
+    viable_whole_phones INTEGER NOT NULL DEFAULT 0,
+    gem_count INTEGER NOT NULL DEFAULT 0,
+    profitable_count INTEGER NOT NULL DEFAULT 0,
+    review_count INTEGER NOT NULL DEFAULT 0,
+    alert_count INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     FOREIGN KEY(scan_run_id) REFERENCES shared_scan_runs(id) ON DELETE CASCADE
 );
@@ -432,6 +477,11 @@ CREATE TABLE IF NOT EXISTS scan_cycles (
     retry_after_seconds INTEGER,
     process_id INTEGER NOT NULL DEFAULT 0,
     hostname TEXT NOT NULL DEFAULT '',
+    worker_id TEXT NOT NULL DEFAULT '',
+    abandoned_at TEXT,
+    abandoned_by_worker_id TEXT NOT NULL DEFAULT '',
+    abandonment_reason TEXT NOT NULL DEFAULT '',
+    partial_trace_count INTEGER NOT NULL DEFAULT 0,
     auth_required INTEGER NOT NULL DEFAULT 0,
     background_poll_enabled INTEGER NOT NULL DEFAULT 0,
     background_poll_seconds INTEGER NOT NULL DEFAULT 0,
@@ -476,6 +526,20 @@ CREATE TABLE IF NOT EXISTS worker_heartbeats (
     FOREIGN KEY(last_cycle_id) REFERENCES scan_cycles(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS worker_leases (
+    lease_name TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL,
+    hostname TEXT NOT NULL,
+    process_id INTEGER NOT NULL,
+    acquired_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    previous_worker_id TEXT NOT NULL DEFAULT '',
+    takeover_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS listing_decision_traces (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -487,6 +551,83 @@ CREATE TABLE IF NOT EXISTS listing_decision_traces (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY(marketplace_item_id) REFERENCES marketplace_items(id) ON DELETE CASCADE,
     FOREIGN KEY(scan_cycle_id) REFERENCES scan_cycles(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS notification_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    item_id TEXT,
+    scan_cycle_id INTEGER,
+    notification_type TEXT NOT NULL,
+    attempted INTEGER NOT NULL DEFAULT 0,
+    sent INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    deduplicated INTEGER NOT NULL DEFAULT 0,
+    skipped INTEGER NOT NULL DEFAULT 0,
+    failure_category TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    destination_source TEXT NOT NULL DEFAULT '',
+    provider_status INTEGER,
+    status TEXT NOT NULL DEFAULT 'legacy_unclassified',
+    fingerprint TEXT NOT NULL DEFAULT '',
+    notification_tier TEXT NOT NULL DEFAULT '',
+    effective_price REAL,
+    expected_profit REAL,
+    expected_roi REAL,
+    principal_damage TEXT NOT NULL DEFAULT 'unknown',
+    availability_state TEXT NOT NULL DEFAULT 'unknown',
+    confidence TEXT NOT NULL DEFAULT 'low',
+    destination_identity TEXT NOT NULL DEFAULT '',
+    successful_at TEXT,
+    prior_success_attempt_id INTEGER,
+    fingerprint_match_reason TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'live_scan',
+    next_eligible_at TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    parent_attempt_id INTEGER,
+    claimed_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(scan_cycle_id) REFERENCES scan_cycles(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    endpoint_hash TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    device_label TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    last_seen_at TEXT,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    invalidated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, endpoint_hash),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS push_delivery_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    subscription_id INTEGER NOT NULL,
+    item_id TEXT,
+    scan_cycle_id INTEGER,
+    notification_tier TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    provider_status INTEGER,
+    error_category TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(subscription_id) REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+    FOREIGN KEY(scan_cycle_id) REFERENCES scan_cycles(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS source_statuses (
@@ -528,12 +669,16 @@ ALLOWED_BILLING_STATUSES = {"", "trial", "active", "past_due", "manual", "comped
 
 
 class Storage:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, initialize: bool = True, read_only: bool = False):
         self.path = path
+        self._read_only = read_only
         self._memory_connection: Optional[sqlite3.Connection] = None
+        if read_only and (initialize or str(path) == ":memory:"):
+            raise ValueError("Read-only storage requires an existing file and initialize=False")
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_db()
+        if initialize:
+            self.init_db()
 
     def connect(self) -> sqlite3.Connection:
         if str(self.path) == ":memory:":
@@ -542,6 +687,10 @@ class Storage:
                 self._memory_connection.row_factory = sqlite3.Row
             return self._memory_connection
 
+        if self._read_only:
+            connection = sqlite3.connect(f"file:{Path(self.path).as_posix()}?mode=ro", uri=True)
+            connection.row_factory = sqlite3.Row
+            return connection
         connection = sqlite3.connect(str(self.path))
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=MEMORY")
@@ -551,6 +700,7 @@ class Storage:
         with self.connect() as connection:
             connection.executescript(SCHEMA)
             self._migrate(connection)
+            self._migrate_forward_evidence(connection)
             self._create_indexes(connection)
             self._migrate_legacy_items_to_split(connection)
             self._migrate_legacy_ignores_to_user(connection)
@@ -620,6 +770,12 @@ class Storage:
             "item_end_at": "ALTER TABLE items ADD COLUMN item_end_at TEXT",
             "last_availability_checked_at": "ALTER TABLE items ADD COLUMN last_availability_checked_at TEXT",
             "availability_note": "ALTER TABLE items ADD COLUMN availability_note TEXT NOT NULL DEFAULT ''",
+            "detail_fetch_attempted_at": "ALTER TABLE items ADD COLUMN detail_fetch_attempted_at TEXT",
+            "detail_fetch_status": "ALTER TABLE items ADD COLUMN detail_fetch_status TEXT NOT NULL DEFAULT 'not_requested'",
+            "detail_fetch_reason": "ALTER TABLE items ADD COLUMN detail_fetch_reason TEXT NOT NULL DEFAULT ''",
+            "detail_fetch_recovered_fields": "ALTER TABLE items ADD COLUMN detail_fetch_recovered_fields TEXT NOT NULL DEFAULT '[]'",
+            "detail_fetch_failure_reason": "ALTER TABLE items ADD COLUMN detail_fetch_failure_reason TEXT NOT NULL DEFAULT ''",
+            "detail_fetch_retry_after": "ALTER TABLE items ADD COLUMN detail_fetch_retry_after TEXT",
         }
         for column, statement in migrations.items():
             if column not in columns:
@@ -646,10 +802,211 @@ class Storage:
             "http_status": "ALTER TABLE scan_cycles ADD COLUMN http_status INTEGER",
             "cooldown_until": "ALTER TABLE scan_cycles ADD COLUMN cooldown_until TEXT",
             "retry_after_seconds": "ALTER TABLE scan_cycles ADD COLUMN retry_after_seconds INTEGER",
+            "worker_id": "ALTER TABLE scan_cycles ADD COLUMN worker_id TEXT NOT NULL DEFAULT ''",
+            "abandoned_at": "ALTER TABLE scan_cycles ADD COLUMN abandoned_at TEXT",
+            "abandoned_by_worker_id": "ALTER TABLE scan_cycles ADD COLUMN abandoned_by_worker_id TEXT NOT NULL DEFAULT ''",
+            "abandonment_reason": "ALTER TABLE scan_cycles ADD COLUMN abandonment_reason TEXT NOT NULL DEFAULT ''",
+            "partial_trace_count": "ALTER TABLE scan_cycles ADD COLUMN partial_trace_count INTEGER NOT NULL DEFAULT 0",
         }
         for column, statement in scan_cycle_migrations.items():
             if column not in scan_cycle_columns:
                 connection.execute(statement)
+
+        worker_lease_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(worker_leases)").fetchall()
+        }
+        worker_lease_migrations = {
+            "previous_worker_id": "ALTER TABLE worker_leases ADD COLUMN previous_worker_id TEXT NOT NULL DEFAULT ''",
+            "takeover_reason": "ALTER TABLE worker_leases ADD COLUMN takeover_reason TEXT NOT NULL DEFAULT ''",
+        }
+        for column, statement in worker_lease_migrations.items():
+            if column not in worker_lease_columns:
+                connection.execute(statement)
+
+        notification_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(user_notification_settings)").fetchall()
+        }
+        notification_migrations = {
+            "push_enabled": "ALTER TABLE user_notification_settings ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 1",
+            "use_global_discord_webhook": "ALTER TABLE user_notification_settings ADD COLUMN use_global_discord_webhook INTEGER NOT NULL DEFAULT 0",
+            "send_gem_immediately": "ALTER TABLE user_notification_settings ADD COLUMN send_gem_immediately INTEGER NOT NULL DEFAULT 1",
+            "send_profitable_immediately": "ALTER TABLE user_notification_settings ADD COLUMN send_profitable_immediately INTEGER NOT NULL DEFAULT 1",
+            "review_delivery_mode": "ALTER TABLE user_notification_settings ADD COLUMN review_delivery_mode TEXT NOT NULL DEFAULT 'immediate'",
+            "max_review_alerts_per_hour": "ALTER TABLE user_notification_settings ADD COLUMN max_review_alerts_per_hour INTEGER NOT NULL DEFAULT 2",
+            "duplicate_suppression_hours": "ALTER TABLE user_notification_settings ADD COLUMN duplicate_suppression_hours INTEGER NOT NULL DEFAULT 72",
+            "gem_min_expected_profit": "ALTER TABLE user_notification_settings ADD COLUMN gem_min_expected_profit REAL NOT NULL DEFAULT 75",
+            "profitable_min_expected_profit": "ALTER TABLE user_notification_settings ADD COLUMN profitable_min_expected_profit REAL NOT NULL DEFAULT 50",
+            "review_min_expected_profit": "ALTER TABLE user_notification_settings ADD COLUMN review_min_expected_profit REAL NOT NULL DEFAULT 25",
+            "review_min_upside_profit": "ALTER TABLE user_notification_settings ADD COLUMN review_min_upside_profit REAL NOT NULL DEFAULT 60",
+            "gem_min_roi": "ALTER TABLE user_notification_settings ADD COLUMN gem_min_roi REAL NOT NULL DEFAULT 0.25",
+            "profitable_min_roi": "ALTER TABLE user_notification_settings ADD COLUMN profitable_min_roi REAL NOT NULL DEFAULT 0.15",
+            "review_min_roi": "ALTER TABLE user_notification_settings ADD COLUMN review_min_roi REAL NOT NULL DEFAULT 0.05",
+            "max_listing_age_minutes": "ALTER TABLE user_notification_settings ADD COLUMN max_listing_age_minutes INTEGER NOT NULL DEFAULT 360",
+            "meaningful_price_drop_amount": "ALTER TABLE user_notification_settings ADD COLUMN meaningful_price_drop_amount REAL NOT NULL DEFAULT 20",
+            "meaningful_price_drop_percent": "ALTER TABLE user_notification_settings ADD COLUMN meaningful_price_drop_percent REAL NOT NULL DEFAULT 0.05",
+            "meaningful_profit_increase_amount": "ALTER TABLE user_notification_settings ADD COLUMN meaningful_profit_increase_amount REAL NOT NULL DEFAULT 25",
+            "meaningful_profit_increase_percent": "ALTER TABLE user_notification_settings ADD COLUMN meaningful_profit_increase_percent REAL NOT NULL DEFAULT 0.15",
+            "meaningful_roi_increase": "ALTER TABLE user_notification_settings ADD COLUMN meaningful_roi_increase REAL NOT NULL DEFAULT 0.10",
+            "catchup_enabled": "ALTER TABLE user_notification_settings ADD COLUMN catchup_enabled INTEGER NOT NULL DEFAULT 1",
+            "catchup_batch_size": "ALTER TABLE user_notification_settings ADD COLUMN catchup_batch_size INTEGER NOT NULL DEFAULT 5",
+            "catchup_include_review": "ALTER TABLE user_notification_settings ADD COLUMN catchup_include_review INTEGER NOT NULL DEFAULT 0",
+        }
+        for column, statement in notification_migrations.items():
+            if column not in notification_columns:
+                connection.execute(statement)
+
+        attempt_columns = {row["name"] for row in connection.execute("PRAGMA table_info(notification_attempts)").fetchall()}
+        attempt_migrations = {
+            "status": "ALTER TABLE notification_attempts ADD COLUMN status TEXT NOT NULL DEFAULT 'legacy_unclassified'",
+            "fingerprint": "ALTER TABLE notification_attempts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
+            "notification_tier": "ALTER TABLE notification_attempts ADD COLUMN notification_tier TEXT NOT NULL DEFAULT ''",
+            "effective_price": "ALTER TABLE notification_attempts ADD COLUMN effective_price REAL",
+            "expected_profit": "ALTER TABLE notification_attempts ADD COLUMN expected_profit REAL",
+            "expected_roi": "ALTER TABLE notification_attempts ADD COLUMN expected_roi REAL",
+            "principal_damage": "ALTER TABLE notification_attempts ADD COLUMN principal_damage TEXT NOT NULL DEFAULT 'unknown'",
+            "availability_state": "ALTER TABLE notification_attempts ADD COLUMN availability_state TEXT NOT NULL DEFAULT 'unknown'",
+            "confidence": "ALTER TABLE notification_attempts ADD COLUMN confidence TEXT NOT NULL DEFAULT 'low'",
+            "destination_identity": "ALTER TABLE notification_attempts ADD COLUMN destination_identity TEXT NOT NULL DEFAULT ''",
+            "successful_at": "ALTER TABLE notification_attempts ADD COLUMN successful_at TEXT",
+            "prior_success_attempt_id": "ALTER TABLE notification_attempts ADD COLUMN prior_success_attempt_id INTEGER",
+            "fingerprint_match_reason": "ALTER TABLE notification_attempts ADD COLUMN fingerprint_match_reason TEXT NOT NULL DEFAULT ''",
+            "source": "ALTER TABLE notification_attempts ADD COLUMN source TEXT NOT NULL DEFAULT 'live_scan'",
+            "next_eligible_at": "ALTER TABLE notification_attempts ADD COLUMN next_eligible_at TEXT",
+            "retry_count": "ALTER TABLE notification_attempts ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+            "parent_attempt_id": "ALTER TABLE notification_attempts ADD COLUMN parent_attempt_id INTEGER",
+            "claimed_at": "ALTER TABLE notification_attempts ADD COLUMN claimed_at TEXT",
+        }
+        for column, statement in attempt_migrations.items():
+            if column not in attempt_columns:
+                connection.execute(statement)
+        connection.execute("""
+            UPDATE notification_attempts SET status = CASE
+              WHEN sent = 1 THEN 'sent' WHEN failed = 1 THEN 'failed'
+              WHEN deduplicated = 1 THEN 'skipped_duplicate'
+              WHEN failure_category = 'review_hourly_limit' THEN 'deferred_rate_limit'
+              WHEN skipped = 1 THEN 'skipped' ELSE status END
+        """)
+        connection.execute("UPDATE notification_attempts SET successful_at = updated_at WHERE sent = 1 AND successful_at IS NULL")
+
+        for table, migrations_for_table in {
+            "marketplace_items": {
+                "detail_fetch_attempted_at": "ALTER TABLE marketplace_items ADD COLUMN detail_fetch_attempted_at TEXT",
+                "detail_fetch_status": "ALTER TABLE marketplace_items ADD COLUMN detail_fetch_status TEXT NOT NULL DEFAULT 'not_requested'",
+                "detail_fetch_reason": "ALTER TABLE marketplace_items ADD COLUMN detail_fetch_reason TEXT NOT NULL DEFAULT ''",
+                "detail_fetch_recovered_fields": "ALTER TABLE marketplace_items ADD COLUMN detail_fetch_recovered_fields TEXT NOT NULL DEFAULT '[]'",
+                "detail_fetch_failure_reason": "ALTER TABLE marketplace_items ADD COLUMN detail_fetch_failure_reason TEXT NOT NULL DEFAULT ''",
+                "detail_fetch_retry_after": "ALTER TABLE marketplace_items ADD COLUMN detail_fetch_retry_after TEXT",
+            },
+            "user_item_corrections": {
+                "feedback_code": "ALTER TABLE user_item_corrections ADD COLUMN feedback_code TEXT NOT NULL DEFAULT ''",
+            },
+            "shared_scan_searches": {
+                "unique_new_items": "ALTER TABLE shared_scan_searches ADD COLUMN unique_new_items INTEGER NOT NULL DEFAULT 0",
+                "duplicate_items": "ALTER TABLE shared_scan_searches ADD COLUMN duplicate_items INTEGER NOT NULL DEFAULT 0",
+                "viable_whole_phones": "ALTER TABLE shared_scan_searches ADD COLUMN viable_whole_phones INTEGER NOT NULL DEFAULT 0",
+                "gem_count": "ALTER TABLE shared_scan_searches ADD COLUMN gem_count INTEGER NOT NULL DEFAULT 0",
+                "profitable_count": "ALTER TABLE shared_scan_searches ADD COLUMN profitable_count INTEGER NOT NULL DEFAULT 0",
+                "review_count": "ALTER TABLE shared_scan_searches ADD COLUMN review_count INTEGER NOT NULL DEFAULT 0",
+                "alert_count": "ALTER TABLE shared_scan_searches ADD COLUMN alert_count INTEGER NOT NULL DEFAULT 0",
+            },
+        }.items():
+            existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+            for column, statement in migrations_for_table.items():
+                if column not in existing:
+                    connection.execute(statement)
+
+    def _migrate_forward_evidence(self, connection: sqlite3.Connection) -> None:
+        """Add forward-only fields without assigning invented values to legacy rows."""
+        additions = {
+            "marketplace_items": {
+                "marketplace_origin_at": "TEXT", "first_seen_at": "TEXT",
+                "retention_managed": "INTEGER NOT NULL DEFAULT 0",
+            },
+            "user_item_states": {
+                "first_scored_at": "TEXT", "item_type": "TEXT",
+                "item_type_reason": "TEXT NOT NULL DEFAULT ''",
+                "scorer_hash": "TEXT NOT NULL DEFAULT ''", "rules_hash": "TEXT NOT NULL DEFAULT ''",
+                "repair_hash": "TEXT NOT NULL DEFAULT ''", "resale_hash": "TEXT NOT NULL DEFAULT ''",
+            },
+            "shared_scan_runs": {"retention_managed": "INTEGER NOT NULL DEFAULT 0"},
+            "shared_scan_searches": {
+                name: "INTEGER NOT NULL DEFAULT 0" for name in (
+                    "detail_fetch_attempts", "detail_fetch_successes", "detail_fetch_failures",
+                    "component_count", "needs_data_count", "reject_count", "alert_eligible_count",
+                )
+            },
+            "shared_scan_results": {
+                "newly_discovered": "INTEGER NOT NULL DEFAULT 0",
+                "detail_status": "TEXT NOT NULL DEFAULT 'not_requested'",
+                "scored": "INTEGER NOT NULL DEFAULT 0",
+                "item_type": "TEXT NOT NULL DEFAULT 'ambiguous'", "tier": "TEXT NOT NULL DEFAULT ''",
+                "needs_data": "INTEGER NOT NULL DEFAULT 0", "rejected": "INTEGER NOT NULL DEFAULT 0",
+                "alert_eligible": "INTEGER NOT NULL DEFAULT 0",
+                "notification_status": "TEXT NOT NULL DEFAULT ''",
+            },
+            "listing_decision_traces": {"retention_managed": "INTEGER NOT NULL DEFAULT 0"},
+            "notification_attempts": {"retention_managed": "INTEGER NOT NULL DEFAULT 0"},
+        }
+        for table, columns in additions.items():
+            existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+            for name, definition in columns.items():
+                if name not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS user_item_feedback (
+                id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                marketplace_item_id INTEGER NOT NULL REFERENCES marketplace_items(id) ON DELETE CASCADE,
+                label TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', scorer_hash TEXT NOT NULL DEFAULT '',
+                rules_hash TEXT NOT NULL DEFAULT '', repair_hash TEXT NOT NULL DEFAULT '',
+                resale_hash TEXT NOT NULL DEFAULT '', estimated_profit REAL,
+                item_type TEXT NOT NULL DEFAULT 'ambiguous', created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, UNIQUE(user_id, marketplace_item_id)
+            );
+            CREATE TABLE IF NOT EXISTS user_item_outcomes (
+                id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                marketplace_item_id INTEGER NOT NULL REFERENCES marketplace_items(id) ON DELETE CASCADE,
+                status TEXT NOT NULL, purchase_price REAL, purchase_tax REAL,
+                inbound_shipping REAL, purchase_date TEXT, actual_repair_type TEXT,
+                parts_cost REAL, other_repair_cost REAL, sale_date TEXT, sale_price REAL,
+                selling_fees REAL, outbound_shipping REAL, refund_amount REAL, other_cost REAL,
+                actual_net_profit REAL, note TEXT NOT NULL DEFAULT '',
+                scorer_hash TEXT NOT NULL DEFAULT '', rules_hash TEXT NOT NULL DEFAULT '',
+                repair_hash TEXT NOT NULL DEFAULT '', resale_hash TEXT NOT NULL DEFAULT '',
+                estimated_profit REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(user_id, marketplace_item_id)
+            );
+            CREATE TABLE IF NOT EXISTS search_daily_rollups (
+                id INTEGER PRIMARY KEY, day TEXT NOT NULL, search_signature TEXT NOT NULL,
+                marketplace TEXT NOT NULL, executions INTEGER NOT NULL,
+                results_returned INTEGER NOT NULL, distinct_listings INTEGER NOT NULL,
+                newly_discovered INTEGER NOT NULL, whole_phone_candidates INTEGER NOT NULL,
+                component_listings INTEGER NOT NULL, gem_count INTEGER NOT NULL,
+                profitable_count INTEGER NOT NULL, review_count INTEGER NOT NULL,
+                needs_data_count INTEGER NOT NULL, reject_count INTEGER NOT NULL,
+                alert_eligible_count INTEGER NOT NULL, alerts_sent INTEGER NOT NULL,
+                detail_fetch_attempts INTEGER NOT NULL, detail_fetch_successes INTEGER NOT NULL,
+                detail_fetch_failures INTEGER NOT NULL, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, UNIQUE(day, search_signature, marketplace)
+            );
+            CREATE TABLE IF NOT EXISTS search_rollup_days (
+                day TEXT PRIMARY KEY, completed_at TEXT NOT NULL, run_count INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS retention_runs (
+                id INTEGER PRIMARY KEY, dry_run INTEGER NOT NULL, status TEXT NOT NULL,
+                started_at TEXT NOT NULL, finished_at TEXT, cutoffs_json TEXT NOT NULL,
+                counts_json TEXT NOT NULL, error TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_forward_marketplace_seen
+                ON marketplace_items(retention_managed, first_seen_at);
+            CREATE INDEX IF NOT EXISTS idx_forward_traces_age
+                ON listing_decision_traces(retention_managed, created_at);
+            CREATE INDEX IF NOT EXISTS idx_forward_runs_age
+                ON shared_scan_runs(retention_managed, started_at);
+            CREATE INDEX IF NOT EXISTS idx_forward_notifications_age
+                ON notification_attempts(retention_managed, created_at);
+        """)
 
     def _create_indexes(self, connection: sqlite3.Connection) -> None:
         columns = {
@@ -703,6 +1060,13 @@ class Storage:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_scan_cycles_user_id ON scan_cycles(user_id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_listing_decision_traces_cycle ON listing_decision_traces(scan_cycle_id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_listing_decision_traces_user_item ON listing_decision_traces(user_id, marketplace_item_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_notification_attempts_user_created ON notification_attempts(user_id, created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_notification_attempts_cycle ON notification_attempts(scan_cycle_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_notification_attempts_item ON notification_attempts(item_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_enabled ON push_subscriptions(user_id, enabled)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_push_delivery_user_created ON push_delivery_attempts(user_id, created_at)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_push_delivery_subscription ON push_delivery_attempts(subscription_id)")
+        connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_notification_attempt_pending_item ON notification_attempts(user_id, item_id, destination_identity) WHERE status = 'pending' AND claimed_at IS NOT NULL")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_source_statuses_updated_at ON source_statuses(updated_at)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_user_usage_daily_date ON user_usage_daily(usage_date)")
 
@@ -788,6 +1152,12 @@ class Storage:
             "item_end_at": item.get("item_end_at"),
             "last_availability_checked_at": item.get("last_availability_checked_at"),
             "availability_note": item.get("availability_note") or "",
+            "detail_fetch_attempted_at": item.get("detail_fetch_attempted_at"),
+            "detail_fetch_status": item.get("detail_fetch_status") or "not_requested",
+            "detail_fetch_reason": item.get("detail_fetch_reason") or "",
+            "detail_fetch_recovered_fields": json.dumps(item.get("detail_fetch_recovered_fields") or []),
+            "detail_fetch_failure_reason": item.get("detail_fetch_failure_reason") or "",
+            "detail_fetch_retry_after": item.get("detail_fetch_retry_after"),
             "raw_json": json.dumps(item.get("raw_json", {})),
         }
         with self.connect() as connection:
@@ -1005,6 +1375,7 @@ class Storage:
         status: Optional[str] = None,
         user_status: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
         include_ignored: bool = False,
         include_stale: bool = False,
         max_alert_item_age_minutes: int = DEFAULT_MAX_ALERT_ITEM_AGE_MINUTES,
@@ -1721,6 +2092,319 @@ class Storage:
             raise KeyError(user_id)
         return notification_row
 
+    def upsert_push_subscription(
+        self,
+        *,
+        user_id: int,
+        endpoint_hash: str,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        device_label: str = "",
+        user_agent: str = "",
+    ) -> dict[str, Any]:
+        now = now_iso()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO push_subscriptions (
+                    user_id, endpoint_hash, endpoint, p256dh, auth, device_label, user_agent,
+                    enabled, last_seen_at, invalidated_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?)
+                ON CONFLICT(user_id, endpoint_hash) DO UPDATE SET
+                    endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth = excluded.auth,
+                    device_label = excluded.device_label, user_agent = excluded.user_agent,
+                    enabled = 1, last_seen_at = excluded.last_seen_at,
+                    invalidated_at = NULL, updated_at = excluded.updated_at
+                RETURNING *
+                """,
+                (
+                    int(user_id), endpoint_hash[:64], endpoint, p256dh, auth,
+                    device_label[:120], user_agent[:500], now, now, now,
+                ),
+            ).fetchone()
+        if not row:
+            raise RuntimeError("Push subscription upsert did not return a row")
+        return _push_subscription_row_to_dict(row)
+
+    def list_push_subscriptions(self, user_id: int, *, enabled_only: bool = False) -> list[dict[str, Any]]:
+        enabled_clause = " AND enabled = 1" if enabled_only else ""
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM push_subscriptions WHERE user_id = ?{enabled_clause} ORDER BY created_at, id",
+                (int(user_id),),
+            ).fetchall()
+        return [_push_subscription_row_to_dict(row) for row in rows]
+
+    def disable_push_subscription(self, user_id: int, endpoint_hash: str, *, invalid: bool = False) -> bool:
+        now = now_iso()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE push_subscriptions
+                SET enabled = 0, invalidated_at = CASE WHEN ? = 1 THEN ? ELSE invalidated_at END,
+                    updated_at = ?
+                WHERE user_id = ? AND endpoint_hash = ?
+                """,
+                (int(bool(invalid)), now, now, int(user_id), endpoint_hash[:64]),
+            )
+        return cursor.rowcount > 0
+
+    def record_push_delivery(
+        self,
+        *,
+        user_id: int,
+        subscription_id: int,
+        status: str,
+        item_id: str | None = None,
+        scan_cycle_id: int | None = None,
+        notification_tier: str = "",
+        provider_status: int | None = None,
+        error_category: str = "",
+        error_message: str = "",
+    ) -> int:
+        now = now_iso()
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                INSERT INTO push_delivery_attempts (
+                    user_id, subscription_id, item_id, scan_cycle_id, notification_tier,
+                    status, provider_status, error_category, error_message, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
+                """,
+                (
+                    int(user_id), int(subscription_id), item_id, scan_cycle_id,
+                    notification_tier[:20], status[:40], provider_status,
+                    error_category[:120], error_message[:500], now, now,
+                ),
+            ).fetchone()
+            if status == "accepted":
+                connection.execute(
+                    "UPDATE push_subscriptions SET last_success_at = ?, updated_at = ? WHERE id = ?",
+                    (now, now, int(subscription_id)),
+                )
+            elif status in {"failed", "invalid"}:
+                connection.execute(
+                    "UPDATE push_subscriptions SET last_failure_at = ?, updated_at = ? WHERE id = ?",
+                    (now, now, int(subscription_id)),
+                )
+        if not row:
+            raise RuntimeError("Push delivery insert did not return an ID")
+        return int(row["id"])
+
+    def list_push_delivery_attempts(self, user_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT pda.*, ps.device_label
+                FROM push_delivery_attempts pda
+                JOIN push_subscriptions ps ON ps.id = pda.subscription_id
+                WHERE pda.user_id = ?
+                ORDER BY pda.created_at DESC, pda.id DESC LIMIT ?
+                """,
+                (int(user_id), max(1, min(int(limit), 500))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_notification_attempt(
+        self,
+        *,
+        user_id: int,
+        item_id: str | None = None,
+        scan_cycle_id: int | None = None,
+        notification_type: str,
+        attempted: bool = False,
+        sent: bool = False,
+        failed: bool = False,
+        deduplicated: bool = False,
+        skipped: bool = False,
+        failure_category: str = "",
+        error_message: str = "",
+        destination_source: str = "",
+        provider_status: int | None = None,
+        status: str | None = None,
+        fingerprint: str = "",
+        notification_tier: str = "",
+        effective_price: float | None = None,
+        expected_profit: float | None = None,
+        expected_roi: float | None = None,
+        principal_damage: str = "unknown",
+        availability_state: str = "unknown",
+        confidence: str = "low",
+        destination_identity: str = "",
+        prior_success_attempt_id: int | None = None,
+        fingerprint_match_reason: str = "",
+        source: str = "live_scan",
+        next_eligible_at: str | None = None,
+        retry_count: int = 0,
+        parent_attempt_id: int | None = None,
+        claim: bool = False,
+    ) -> int | None:
+        now = now_iso()
+        resolved_status = status or (
+            "sent" if sent else "failed" if failed else "skipped_duplicate" if deduplicated
+            else "deferred_rate_limit" if failure_category == "review_hourly_limit"
+            else "skipped" if skipped else "pending"
+        )
+        with self.connect() as connection:
+            managed = 0
+            if item_id:
+                source_item = connection.execute(
+                    "SELECT retention_managed FROM marketplace_items WHERE marketplace_item_id = ? LIMIT 1",
+                    (str(item_id),),
+                ).fetchone()
+                managed = int(source_item["retention_managed"] or 0) if source_item else 0
+            cursor = connection.execute(
+                """
+                INSERT INTO notification_attempts (
+                    user_id, item_id, scan_cycle_id, notification_type, attempted, sent, failed,
+                    deduplicated, skipped, failure_category, error_message, destination_source,
+                    provider_status, status, fingerprint, notification_tier, effective_price,
+                    expected_profit, expected_roi, principal_damage, availability_state, confidence,
+                    destination_identity, prior_success_attempt_id, fingerprint_match_reason, source,
+                    next_eligible_at, retry_count, parent_attempt_id, claimed_at, created_at, updated_at,
+                    retention_managed
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,
+                (
+                    int(user_id), str(item_id)[:255] if item_id else None, scan_cycle_id,
+                    str(notification_type)[:80], int(bool(attempted)), int(bool(sent)), int(bool(failed)),
+                    int(bool(deduplicated)), int(bool(skipped)), str(failure_category)[:120],
+                    str(error_message)[:500], str(destination_source)[:40], provider_status,
+                    resolved_status[:40], fingerprint[:64], (notification_tier or notification_type).upper()[:20],
+                    effective_price, expected_profit, expected_roi, principal_damage[:120],
+                    availability_state[:40], confidence[:20], destination_identity[:80],
+                    prior_success_attempt_id, fingerprint_match_reason[:120], source[:80], next_eligible_at,
+                    max(0, int(retry_count)), parent_attempt_id, now if claim else None, now, now, managed,
+                ),
+            )
+            row = cursor.fetchone()
+        if not row and claim:
+            return None
+        if not row:
+            raise RuntimeError("Notification attempt insert did not return an ID")
+        return int(row["id"])
+
+    def finish_notification_attempt(
+        self,
+        attempt_id: int,
+        *,
+        sent: bool,
+        failed: bool,
+        failure_category: str = "",
+        error_message: str = "",
+        provider_status: int | None = None,
+        next_eligible_at: str | None = None,
+    ) -> bool:
+        status = "sent" if sent else "failed" if failed else "cancelled_unavailable"
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE notification_attempts
+                SET sent = ?, failed = ?, failure_category = ?, error_message = ?,
+                    provider_status = ?, status = ?, successful_at = CASE WHEN ? = 1 THEN ? ELSE successful_at END,
+                    next_eligible_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'pending'
+                """,
+                (
+                    int(bool(sent)), int(bool(failed)), str(failure_category)[:120],
+                    str(error_message)[:500], provider_status, status, int(bool(sent)), now_iso(),
+                    next_eligible_at, now_iso(), int(attempt_id),
+                ),
+            )
+        return cursor.rowcount > 0
+
+    def recover_stale_notification_claims(
+        self, user_id: int, item_id: str, destination_identity: str, *, now: datetime | None = None,
+    ) -> list[int]:
+        """Expire only abandoned claims; the pending unique index serializes the next claimant."""
+        current = now or datetime.now(timezone.utc)
+        cutoff = (current - timedelta(seconds=NOTIFICATION_CLAIM_LEASE_SECONDS)).isoformat()
+        retry_at = (current + timedelta(seconds=60)).isoformat()
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                UPDATE notification_attempts
+                SET status = 'failed', failed = 1, failure_category = 'claim_lease_expired',
+                    error_message = 'Pending delivery claim expired before finalization',
+                    next_eligible_at = ?, updated_at = ?
+                WHERE user_id = ? AND item_id = ? AND destination_identity = ?
+                  AND status = 'pending' AND claimed_at IS NOT NULL AND claimed_at <= ?
+                RETURNING id
+                """,
+                (retry_at, current.isoformat(), int(user_id), str(item_id), str(destination_identity), cutoff),
+            ).fetchall()
+        return [int(row["id"]) for row in rows]
+
+    def latest_successful_notification(self, user_id: int, item_id: str, destination_identity: str) -> Optional[dict[str, Any]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM notification_attempts
+                WHERE user_id = ? AND item_id = ? AND sent = 1
+                  AND (destination_identity = ? OR destination_identity = '')
+                ORDER BY COALESCE(successful_at, updated_at) DESC, id DESC LIMIT 1
+                """,
+                (int(user_id), str(item_id), str(destination_identity)),
+            ).fetchone()
+        return _notification_attempt_row_to_dict(row) if row else None
+
+    def notification_delivery_metrics(self, user_id: int) -> dict[str, int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT status, COUNT(*) AS count FROM notification_attempts WHERE user_id = ? GROUP BY status",
+                (int(user_id),),
+            ).fetchall()
+            relerts = connection.execute(
+                "SELECT source, COUNT(*) AS count FROM notification_attempts WHERE user_id = ? AND sent = 1 GROUP BY source",
+                (int(user_id),),
+            ).fetchall()
+        counts = {str(row["status"]): int(row["count"] or 0) for row in rows}
+        source_counts = {str(row["source"]): int(row["count"] or 0) for row in relerts}
+        return {
+            "attempts": sum(counts.get(key, 0) for key in ("pending", "sent", "failed")),
+            "sent": counts.get("sent", 0),
+            "failed": counts.get("failed", 0),
+            "genuine_duplicate_suppressions": counts.get("skipped_duplicate", 0),
+            "rate_limited_deferred": counts.get("deferred_rate_limit", 0),
+            "unavailable_before_send": counts.get("cancelled_unavailable", 0),
+            "tier_upgrades_sent": source_counts.get("tier_upgrade", 0),
+            "price_drop_realerts": source_counts.get("price_drop_realert", 0),
+        }
+
+    def successfully_notified_item_ids(self, user_id: int) -> set[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT item_id FROM notification_attempts WHERE user_id = ? AND sent = 1 AND item_id IS NOT NULL",
+                (int(user_id),),
+            ).fetchall()
+        return {str(row["item_id"]) for row in rows}
+
+    def list_notification_attempts(self, *, user_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        where = "WHERE user_id = ?" if user_id is not None else ""
+        params: tuple[Any, ...] = (int(user_id), max(1, min(int(limit), 500))) if user_id is not None else (max(1, min(int(limit), 500)),)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM notification_attempts {where} ORDER BY created_at DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [_notification_attempt_row_to_dict(row) for row in rows]
+
+    def latest_attempted_notification(self, user_id: int, notification_type: str) -> Optional[dict[str, Any]]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM notification_attempts
+                WHERE user_id = ? AND notification_type = ? AND attempted = 1
+                ORDER BY created_at DESC, id DESC LIMIT 1
+                """,
+                (int(user_id), str(notification_type)),
+            ).fetchone()
+        return _notification_attempt_row_to_dict(row) if row else None
+
     def list_user_repair_value_overrides(self, user_id: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -1899,6 +2583,7 @@ class Storage:
                     uic.corrected_storage_capacity,
                     uic.corrected_issue_type,
                     uic.corrected_part_cost,
+                    uic.feedback_code,
                     uic.note,
                     uic.created_at,
                     uic.updated_at,
@@ -1912,6 +2597,34 @@ class Storage:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_user_item_corrections_for_items(self, user_id: int, item_ids: list[str]) -> list[dict[str, Any]]:
+        cleaned_item_ids = [str(item_id or "").strip() for item_id in item_ids if str(item_id or "").strip()]
+        if not cleaned_item_ids:
+            return []
+        placeholders = ", ".join("?" for _ in cleaned_item_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT
+                    uic.id,
+                    uic.user_id,
+                    uic.corrected_model,
+                    uic.corrected_storage_capacity,
+                    uic.corrected_issue_type,
+                    uic.corrected_part_cost,
+                    uic.feedback_code,
+                    uic.note,
+                    uic.created_at,
+                    uic.updated_at,
+                    mi.marketplace_item_id AS item_id
+                FROM user_item_corrections uic
+                INNER JOIN marketplace_items mi ON mi.id = uic.marketplace_item_id
+                WHERE uic.user_id = ? AND mi.marketplace_item_id IN ({placeholders})
+                """,
+                [user_id, *cleaned_item_ids],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def upsert_user_item_correction(
         self,
         user_id: int,
@@ -1921,6 +2634,7 @@ class Storage:
         corrected_storage_capacity: str | None = None,
         corrected_issue_type: str | None = None,
         corrected_part_cost: float | None = None,
+        feedback_code: str = "",
         note: str = "",
         marketplace: str = "ebay",
     ) -> dict[str, Any]:
@@ -1930,11 +2644,12 @@ class Storage:
         corrected_model = (corrected_model or "").strip() or None
         corrected_storage_capacity = (corrected_storage_capacity or "").strip() or None
         corrected_issue_type = (corrected_issue_type or "").strip() or None
+        feedback_code = (feedback_code or "").strip().lower()[:40]
         note = note[:1000]
         now = now_iso()
         with self.connect() as connection:
             marketplace_row = connection.execute(
-                "SELECT id FROM marketplace_items WHERE marketplace = ? AND marketplace_item_id = ? LIMIT 1",
+                "SELECT id, retention_managed FROM marketplace_items WHERE marketplace = ? AND marketplace_item_id = ? LIMIT 1",
                 (marketplace, item_id),
             ).fetchone()
             if not marketplace_row:
@@ -1943,14 +2658,15 @@ class Storage:
                 """
                 INSERT INTO user_item_corrections (
                     user_id, marketplace_item_id, corrected_model, corrected_storage_capacity,
-                    corrected_issue_type, corrected_part_cost, note, created_at, updated_at
+                    corrected_issue_type, corrected_part_cost, feedback_code, note, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, marketplace_item_id) DO UPDATE SET
                     corrected_model = excluded.corrected_model,
                     corrected_storage_capacity = excluded.corrected_storage_capacity,
                     corrected_issue_type = excluded.corrected_issue_type,
                     corrected_part_cost = excluded.corrected_part_cost,
+                    feedback_code = excluded.feedback_code,
                     note = excluded.note,
                     updated_at = excluded.updated_at
                 """,
@@ -1961,6 +2677,7 @@ class Storage:
                     corrected_storage_capacity[:20] if corrected_storage_capacity else None,
                     corrected_issue_type[:40] if corrected_issue_type else None,
                     round(float(corrected_part_cost), 2) if corrected_part_cost is not None else None,
+                    feedback_code,
                     note,
                     now,
                     now,
@@ -2233,6 +2950,107 @@ class Storage:
             ).fetchone()
         return bool(row)
 
+    def _user_item_evidence_row(self, connection: Any, user_id: int, item_id: str) -> Any:
+        row = connection.execute(
+            """SELECT mi.id, uis.scorer_hash, uis.rules_hash, uis.repair_hash,
+                      uis.resale_hash, uis.estimated_profit, uis.item_type
+               FROM marketplace_items mi JOIN user_item_states uis ON uis.marketplace_item_id = mi.id
+               WHERE mi.marketplace_item_id = ? AND uis.user_id = ? LIMIT 1""",
+            (str(item_id), int(user_id)),
+        ).fetchone()
+        if not row:
+            raise KeyError(item_id)
+        return row
+
+    def get_user_item_feedback(self, user_id: int, item_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT f.*, mi.marketplace_item_id AS item_id FROM user_item_feedback f
+                   JOIN marketplace_items mi ON mi.id=f.marketplace_item_id
+                   WHERE f.user_id=? AND mi.marketplace_item_id=? LIMIT 1""",
+                (int(user_id), str(item_id)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_user_item_feedback(
+        self, user_id: int, item_id: str, *, label: str, note: str | None = None,
+    ) -> dict[str, Any]:
+        label = label.strip().upper()
+        if label not in {"GOOD", "BAD", "UNSURE"}:
+            raise ValueError("Unsupported feedback label")
+        now = now_iso()
+        with self.connect() as connection:
+            item = self._user_item_evidence_row(connection, user_id, item_id)
+            if note is None:
+                previous = connection.execute(
+                    "SELECT note FROM user_item_feedback WHERE user_id=? AND marketplace_item_id=?",
+                    (int(user_id), int(item["id"])),
+                ).fetchone()
+                note = previous["note"] if previous else ""
+            connection.execute(
+                """INSERT INTO user_item_feedback (
+                    user_id, marketplace_item_id, label, note, scorer_hash, rules_hash,
+                    repair_hash, resale_hash, estimated_profit, item_type, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, marketplace_item_id) DO UPDATE SET
+                    label=excluded.label, note=excluded.note, updated_at=excluded.updated_at""",
+                (int(user_id), int(item["id"]), label, note[:1000], item["scorer_hash"],
+                 item["rules_hash"], item["repair_hash"], item["resale_hash"],
+                 item["estimated_profit"], item["item_type"], now, now),
+            )
+        return self.get_user_item_feedback(user_id, item_id) or {}
+
+    def get_user_item_outcome(self, user_id: int, item_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT o.*, mi.marketplace_item_id AS item_id FROM user_item_outcomes o
+                   JOIN marketplace_items mi ON mi.id=o.marketplace_item_id
+                   WHERE o.user_id=? AND mi.marketplace_item_id=? LIMIT 1""",
+                (int(user_id), str(item_id)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_user_item_outcome(
+        self, user_id: int, item_id: str, *, values: dict[str, Any],
+    ) -> dict[str, Any]:
+        now = now_iso()
+        fields = (*MONEY_FIELDS, "purchase_date", "actual_repair_type", "sale_date", "note")
+        with self.connect() as connection:
+            item = self._user_item_evidence_row(connection, user_id, item_id)
+            existing = connection.execute(
+                "SELECT * FROM user_item_outcomes WHERE user_id=? AND marketplace_item_id=?",
+                (int(user_id), int(item["id"])),
+            ).fetchone()
+            merged = {key: existing[key] if existing else None for key in fields}
+            merged.update({key: value for key, value in values.items() if key in fields})
+            status = str(values.get("status") or (existing["status"] if existing else "")).upper()
+            net = actual_net_profit(status, merged)
+            money = [round(float(merged[key]), 2) if merged[key] is not None else None for key in MONEY_FIELDS]
+            connection.execute(
+                """INSERT INTO user_item_outcomes (
+                    user_id, marketplace_item_id, status, purchase_price, purchase_tax,
+                    inbound_shipping, parts_cost, other_repair_cost, sale_price, selling_fees,
+                    outbound_shipping, refund_amount, other_cost, purchase_date, actual_repair_type,
+                    sale_date, actual_net_profit, note, scorer_hash, rules_hash, repair_hash,
+                    resale_hash, estimated_profit, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, marketplace_item_id) DO UPDATE SET
+                    status=excluded.status, purchase_price=excluded.purchase_price,
+                    purchase_tax=excluded.purchase_tax, inbound_shipping=excluded.inbound_shipping,
+                    parts_cost=excluded.parts_cost, other_repair_cost=excluded.other_repair_cost,
+                    sale_price=excluded.sale_price, selling_fees=excluded.selling_fees,
+                    outbound_shipping=excluded.outbound_shipping, refund_amount=excluded.refund_amount,
+                    other_cost=excluded.other_cost, purchase_date=excluded.purchase_date,
+                    actual_repair_type=excluded.actual_repair_type, sale_date=excluded.sale_date,
+                    actual_net_profit=excluded.actual_net_profit, note=excluded.note,
+                    updated_at=excluded.updated_at""",
+                (int(user_id), int(item["id"]), status, *money,
+                 merged["purchase_date"], merged["actual_repair_type"], merged["sale_date"], net,
+                 str(merged["note"] or "")[:1000], item["scorer_hash"], item["rules_hash"],
+                 item["repair_hash"], item["resale_hash"], item["estimated_profit"], now, now),
+            )
+        return self.get_user_item_outcome(user_id, item_id) or {}
+
     def upsert_marketplace_item(self, item: dict[str, Any], *, marketplace: str = "ebay") -> dict[str, Any]:
         now = now_iso()
         with self.connect() as connection:
@@ -2296,15 +3114,23 @@ class Storage:
                     mi.seller_feedback_percentage AS seller_feedback_percentage,
                     mi.seller_feedback_score AS seller_feedback_score,
                     mi.raw_description AS raw_description,
+                    mi.raw_json AS raw_json,
                     mi.item_origin_at AS item_origin_at,
+                    mi.marketplace_origin_at AS marketplace_origin_at,
+                    mi.first_seen_at AS first_seen_at,
                     mi.found_at AS found_at,
                     uis.updated_at AS updated_at,
-                    mi.raw_json AS raw_json,
                     mi.availability_status AS availability_status,
                     mi.buying_option_summary AS buying_option_summary,
                     mi.item_end_at AS item_end_at,
                     mi.last_availability_checked_at AS last_availability_checked_at,
                     mi.availability_note AS availability_note,
+                    mi.detail_fetch_attempted_at AS detail_fetch_attempted_at,
+                    mi.detail_fetch_status AS detail_fetch_status,
+                    mi.detail_fetch_reason AS detail_fetch_reason,
+                    mi.detail_fetch_recovered_fields AS detail_fetch_recovered_fields,
+                    mi.detail_fetch_failure_reason AS detail_fetch_failure_reason,
+                    mi.detail_fetch_retry_after AS detail_fetch_retry_after,
                     uis.score AS score,
                     uis.status AS status,
                     uis.model AS model,
@@ -2349,6 +3175,16 @@ class Storage:
                     uis.manual_review_reason AS manual_review_reason,
                     uis.alert_eligible AS alert_eligible,
                     uis.listing_classification_flags AS listing_classification_flags,
+                    uis.first_scored_at AS first_scored_at,
+                    uis.item_type AS item_type,
+                    uis.item_type_reason AS item_type_reason,
+                    uis.scorer_hash AS scorer_hash,
+                    uis.rules_hash AS rules_hash,
+                    uis.repair_hash AS repair_hash,
+                    uis.resale_hash AS resale_hash,
+                    (SELECT f.label FROM user_item_feedback f WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id) AS feedback_label,
+                    (SELECT o.status FROM user_item_outcomes o WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS outcome_status,
+                    (SELECT o.actual_net_profit FROM user_item_outcomes o WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS actual_net_profit,
                     uis.user_status AS user_status,
                     uis.user_note AS user_note,
                     uis.reviewed_at AS reviewed_at,
@@ -2389,6 +3225,7 @@ class Storage:
         status: Optional[str] = None,
         user_status: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
         include_ignored: bool = False,
         include_stale: bool = False,
         max_alert_item_age_minutes: int = DEFAULT_MAX_ALERT_ITEM_AGE_MINUTES,
@@ -2396,6 +3233,7 @@ class Storage:
         max_active_queue_item_age_hours: int = DEFAULT_MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(limit, 500))
+        offset = max(0, int(offset or 0))
         clauses = ["uis.user_id = ?"]
         params: list[Any] = [user_id]
         if status:
@@ -2406,6 +3244,10 @@ class Storage:
             params.append(user_status)
         if not include_ignored:
             clauses.append("uis.user_status != 'ignored'")
+        if not include_stale:
+            active_cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_active_queue_item_age_hours)).isoformat()
+            clauses.append("COALESCE(mi.item_origin_at, mi.found_at) >= ?")
+            params.append(active_cutoff)
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
@@ -2423,15 +3265,23 @@ class Storage:
                     mi.seller_feedback_percentage AS seller_feedback_percentage,
                     mi.seller_feedback_score AS seller_feedback_score,
                     mi.raw_description AS raw_description,
+                    mi.raw_json AS raw_json,
                     mi.item_origin_at AS item_origin_at,
+                    mi.marketplace_origin_at AS marketplace_origin_at,
+                    mi.first_seen_at AS first_seen_at,
                     mi.found_at AS found_at,
                     uis.updated_at AS updated_at,
-                    mi.raw_json AS raw_json,
                     mi.availability_status AS availability_status,
                     mi.buying_option_summary AS buying_option_summary,
                     mi.item_end_at AS item_end_at,
                     mi.last_availability_checked_at AS last_availability_checked_at,
                     mi.availability_note AS availability_note,
+                    mi.detail_fetch_attempted_at AS detail_fetch_attempted_at,
+                    mi.detail_fetch_status AS detail_fetch_status,
+                    mi.detail_fetch_reason AS detail_fetch_reason,
+                    mi.detail_fetch_recovered_fields AS detail_fetch_recovered_fields,
+                    mi.detail_fetch_failure_reason AS detail_fetch_failure_reason,
+                    mi.detail_fetch_retry_after AS detail_fetch_retry_after,
                     uis.score AS score,
                     uis.status AS status,
                     uis.model AS model,
@@ -2476,6 +3326,16 @@ class Storage:
                     uis.manual_review_reason AS manual_review_reason,
                     uis.alert_eligible AS alert_eligible,
                     uis.listing_classification_flags AS listing_classification_flags,
+                    uis.first_scored_at AS first_scored_at,
+                    uis.item_type AS item_type,
+                    uis.item_type_reason AS item_type_reason,
+                    uis.scorer_hash AS scorer_hash,
+                    uis.rules_hash AS rules_hash,
+                    uis.repair_hash AS repair_hash,
+                    uis.resale_hash AS resale_hash,
+                    (SELECT f.label FROM user_item_feedback f WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id) AS feedback_label,
+                    (SELECT o.status FROM user_item_outcomes o WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS outcome_status,
+                    (SELECT o.actual_net_profit FROM user_item_outcomes o WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS actual_net_profit,
                     uis.user_status AS user_status,
                     uis.user_note AS user_note,
                     uis.reviewed_at AS reviewed_at,
@@ -2494,10 +3354,10 @@ class Storage:
                 FROM user_item_states uis
                 INNER JOIN marketplace_items mi ON mi.id = uis.marketplace_item_id
                 WHERE {' AND '.join(clauses)}
-                ORDER BY COALESCE(mi.item_origin_at, mi.found_at) DESC
-                LIMIT ?
+                ORDER BY COALESCE(mi.item_origin_at, mi.found_at) DESC, mi.id DESC
+                LIMIT ? OFFSET ?
                 """,
-                [*params, 500],
+                [*params, limit, offset],
             ).fetchall()
         items = [
             _row_to_dict(
@@ -2508,9 +3368,7 @@ class Storage:
             )
             for row in rows
         ]
-        if not include_stale:
-            items = [item for item in items if not item["stale"]]
-        return items[:limit]
+        return items
 
     def list_user_items_for_availability_refresh(
         self,
@@ -2706,10 +3564,10 @@ class Storage:
                 INSERT INTO shared_scan_runs (
                     mode, status, triggered_by_user_id, active_users, unique_searches,
                     api_calls_made, total_items_returned, total_users_evaluated,
-                    total_items_scored, total_alerts_sent, started_at, finished_at,
+                    total_items_scored, total_alerts_sent, retention_managed, started_at, finished_at,
                     created_at, updated_at
                 )
-                VALUES (?, 'running', ?, ?, ?, 0, 0, 0, 0, 0, ?, NULL, ?, ?)
+                VALUES (?, 'running', ?, ?, ?, 0, 0, 0, 0, 0, 1, ?, NULL, ?, ?)
                 """,
                 (mode, triggered_by_user_id, active_users, unique_searches, now, now, now),
             )
@@ -2818,6 +3676,112 @@ class Storage:
                 [(scan_search_id, marketplace, item_id, now) for item_id in item_ids],
             )
 
+    def update_shared_scan_result(
+        self, scan_search_id: int, item_id: str, *, newly_discovered: bool,
+        detail_status: str, item_type: str, tier: str | None,
+        needs_data: bool, rejected: bool, alert_eligible: bool,
+        notification_status: str = "", marketplace: str = "ebay",
+    ) -> None:
+        """Attach compact decision evidence to an existing search/item reference."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE shared_scan_results SET
+                    newly_discovered = CASE WHEN newly_discovered = 1 THEN 1 ELSE ? END,
+                    detail_status = CASE WHEN ? = 'not_requested' THEN detail_status ELSE ? END,
+                    scored = 1, item_type = ?,
+                    tier = CASE
+                        WHEN tier = 'GEM' OR (? = 'GEM') THEN 'GEM'
+                        WHEN tier = 'PROFITABLE' OR (? = 'PROFITABLE') THEN 'PROFITABLE'
+                        WHEN tier = 'REVIEW' OR (? = 'REVIEW') THEN 'REVIEW'
+                        ELSE '' END,
+                    needs_data = CASE WHEN needs_data = 1 OR ? = 1 THEN 1 ELSE 0 END,
+                    rejected = CASE WHEN rejected = 1 OR ? = 1 THEN 1 ELSE 0 END,
+                    alert_eligible = CASE WHEN alert_eligible = 1 OR ? = 1 THEN 1 ELSE 0 END,
+                    notification_status = CASE WHEN ? = '' THEN notification_status ELSE ? END
+                WHERE scan_search_id = ? AND marketplace = ? AND marketplace_item_id = ?
+                """,
+                (
+                    int(newly_discovered), detail_status, detail_status, item_type,
+                    tier or "", tier or "", tier or "", int(needs_data), int(rejected),
+                    int(alert_eligible), notification_status, notification_status,
+                    int(scan_search_id), marketplace, str(item_id),
+                ),
+            )
+
+    def set_shared_scan_notification_status(
+        self, scan_search_id: int, item_id: str, status: str, *, marketplace: str = "ebay",
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE shared_scan_results SET notification_status = "
+                "CASE WHEN notification_status = 'sent' THEN 'sent' ELSE ? END "
+                "WHERE scan_search_id = ? AND marketplace = ? AND marketplace_item_id = ?",
+                (status[:32], int(scan_search_id), marketplace, str(item_id)),
+            )
+
+    def finish_shared_scan_search(
+        self,
+        search_id: int,
+        *,
+        unique_new_items: int,
+        duplicate_items: int,
+        viable_whole_phones: int,
+        gem_count: int,
+        profitable_count: int,
+        review_count: int,
+        alert_count: int,
+        detail_fetch_attempts: int = 0,
+        detail_fetch_successes: int = 0,
+        detail_fetch_failures: int = 0,
+        component_count: int = 0,
+        needs_data_count: int = 0,
+        reject_count: int = 0,
+        alert_eligible_count: int = 0,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE shared_scan_searches
+                SET unique_new_items = ?, duplicate_items = ?, viable_whole_phones = ?,
+                    gem_count = ?, profitable_count = ?, review_count = ?, alert_count = ?,
+                    detail_fetch_attempts = ?, detail_fetch_successes = ?, detail_fetch_failures = ?,
+                    component_count = ?, needs_data_count = ?, reject_count = ?, alert_eligible_count = ?
+                WHERE id = ?
+                """,
+                (
+                    int(unique_new_items), int(duplicate_items), int(viable_whole_phones),
+                    int(gem_count), int(profitable_count), int(review_count), int(alert_count),
+                    int(detail_fetch_attempts), int(detail_fetch_successes), int(detail_fetch_failures),
+                    int(component_count), int(needs_data_count), int(reject_count), int(alert_eligible_count),
+                    int(search_id),
+                ),
+            )
+
+    def recent_search_quality(self, keyword: str, *, limit: int = 12) -> dict[str, float]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT items_returned, duplicate_items, viable_whole_phones,
+                       gem_count, profitable_count, review_count
+                FROM shared_scan_searches
+                WHERE lower(keyword) = lower(?)
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (keyword, int(limit)),
+            ).fetchall()
+        returned = sum(int(row["items_returned"] or 0) for row in rows)
+        duplicates = sum(int(row["duplicate_items"] or 0) for row in rows)
+        viable = sum(int(row["viable_whole_phones"] or 0) for row in rows)
+        actionable = sum(int(row["gem_count"] or 0) + int(row["profitable_count"] or 0) + int(row["review_count"] or 0) for row in rows)
+        return {
+            "samples": float(len(rows)),
+            "duplicate_rate": duplicates / returned if returned else 0.0,
+            "viable_rate": viable / returned if returned else 0.0,
+            "actionable_rate": actionable / returned if returned else 0.0,
+        }
+
     def create_scan_cycle(
         self,
         *,
@@ -2825,6 +3789,7 @@ class Storage:
         user_id: int | None = None,
         process_id: int = 0,
         hostname: str = "",
+        worker_id: str = "",
         auth_required: bool = False,
         background_poll_enabled: bool = False,
         background_poll_seconds: int = 0,
@@ -2851,12 +3816,12 @@ class Storage:
                 INSERT INTO scan_cycles (
                     mode, user_id, started_at, finished_at, status, skip_reason, error_message,
                     source, error_category, http_status, cooldown_until, retry_after_seconds,
-                    process_id, hostname, auth_required, background_poll_enabled,
+                    process_id, hostname, worker_id, auth_required, background_poll_enabled,
                     background_poll_seconds, active_window_start, active_window_end,
                     active_window_timezone, users_considered, users_scanned,
                     keywords_searched, sources_checked, created_at, updated_at
                 )
-                VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     mode[:40],
@@ -2872,6 +3837,7 @@ class Storage:
                     int(retry_after_seconds) if retry_after_seconds is not None else None,
                     int(process_id or 0),
                     hostname[:255],
+                    worker_id[:255],
                     int(bool(auth_required)),
                     int(bool(background_poll_enabled)),
                     int(background_poll_seconds or 0),
@@ -3097,6 +4063,236 @@ class Storage:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def storage_metrics(self) -> dict[str, Any]:
+        """Small operational counts; physical size may be unavailable."""
+        with self.connect() as connection:
+            traces = connection.execute(
+                "SELECT COUNT(*) row_count, MIN(created_at) oldest_at, MAX(created_at) newest_at, "
+                "SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) recent_24h "
+                "FROM listing_decision_traces",
+                ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),),
+            ).fetchone()
+            rollups = connection.execute("SELECT COUNT(*) n FROM search_daily_rollups").fetchone()
+            latest = connection.execute(
+                "SELECT * FROM retention_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            removed = connection.execute(
+                "SELECT counts_json FROM retention_runs WHERE status='completed'"
+            ).fetchall()
+        removed_totals: dict[str, int] = {}
+        for row in removed:
+            for key, value in json.loads(row["counts_json"] or "{}").items():
+                if key in {"rollup_days", "rollup_runs"}:
+                    continue
+                removed_totals[key] = removed_totals.get(key, 0) + int(value)
+        size_bytes = None
+        if isinstance(self, PostgresStorage):
+            try:
+                with self.connect() as connection:
+                    size_bytes = connection.execute("SELECT pg_database_size(current_database()) n").fetchone()["n"]
+            except Exception:
+                pass
+        elif str(self.path) != ":memory:":
+            try:
+                size_bytes = Path(self.path).stat().st_size
+            except OSError:
+                pass
+        return {
+            "database_size_bytes": size_bytes,
+            "trace_rows": traces["row_count"], "trace_recent_24h": traces["recent_24h"] or 0,
+            "trace_oldest_at": traces["oldest_at"], "trace_newest_at": traces["newest_at"],
+            "aggregate_rows": rollups["n"], "latest_retention_run": dict(latest) if latest else None,
+            "retention_rows_removed": removed_totals,
+        }
+
+    def acquire_worker_lease(
+        self, lease_name: str, worker_id: str, *, hostname: str, process_id: int,
+        now: str, expires_at: str,
+    ) -> bool:
+        """Atomically acquire an expired lease or renew a lease already owned by this worker."""
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO worker_leases (
+                    lease_name, worker_id, hostname, process_id, acquired_at,
+                    heartbeat_at, expires_at, previous_worker_id, takeover_reason,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?)
+                ON CONFLICT(lease_name) DO NOTHING
+                """,
+                (lease_name, worker_id, hostname, process_id, now, now, expires_at, now, now),
+            )
+            connection.execute(
+                """
+                UPDATE worker_leases
+                SET worker_id = ?, hostname = ?, process_id = ?,
+                    acquired_at = CASE WHEN worker_id = ? THEN acquired_at ELSE ? END,
+                    previous_worker_id = CASE WHEN worker_id = ? THEN previous_worker_id ELSE worker_id END,
+                    takeover_reason = CASE WHEN worker_id = ? THEN takeover_reason ELSE 'lease_expired' END,
+                    heartbeat_at = ?, expires_at = ?, updated_at = ?
+                WHERE lease_name = ? AND (worker_id = ? OR expires_at <= ?)
+                """,
+                (
+                    worker_id, hostname, process_id, worker_id, now, worker_id, worker_id,
+                    now, expires_at, now, lease_name, worker_id, now,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM worker_leases WHERE lease_name = ?", (lease_name,)
+            ).fetchone()
+        return bool(row and row["worker_id"] == worker_id and row["expires_at"] == expires_at)
+
+    def renew_worker_lease(self, lease_name: str, worker_id: str, *, now: str, expires_at: str) -> bool:
+        """Renew a lease only when the caller is still its exact owner."""
+        with self.connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE worker_leases
+                SET heartbeat_at = ?, expires_at = ?, updated_at = ?
+                WHERE lease_name = ? AND worker_id = ?
+                """,
+                (now, expires_at, now, lease_name, worker_id),
+            )
+        return bool(result.rowcount)
+
+    def takeover_worker_lease(
+        self,
+        lease_name: str,
+        worker_id: str,
+        *,
+        hostname: str,
+        process_id: int,
+        now: str,
+        expires_at: str,
+        expected_worker_id: str,
+        expected_expires_at: str,
+        reason: str,
+    ) -> bool:
+        """Compare-and-swap a lease after external owner-death validation."""
+        with self.connect() as connection:
+            result = connection.execute(
+                """
+                UPDATE worker_leases
+                SET previous_worker_id = worker_id,
+                    worker_id = ?, hostname = ?, process_id = ?, acquired_at = ?,
+                    heartbeat_at = ?, expires_at = ?, takeover_reason = ?, updated_at = ?
+                WHERE lease_name = ? AND worker_id = ? AND expires_at = ?
+                """,
+                (
+                    worker_id, hostname, int(process_id), now, now, expires_at, reason[:120], now,
+                    lease_name, expected_worker_id, expected_expires_at,
+                ),
+            )
+        return bool(result.rowcount)
+
+    def release_worker_lease(self, lease_name: str, worker_id: str) -> bool:
+        with self.connect() as connection:
+            result = connection.execute(
+                "DELETE FROM worker_leases WHERE lease_name = ? AND worker_id = ?",
+                (lease_name, worker_id),
+            )
+        return bool(result.rowcount)
+
+    def get_worker_lease(self, lease_name: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM worker_leases WHERE lease_name = ?", (lease_name,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_unfinished_scan_cycles(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM scan_cycles
+                WHERE status = 'started' AND finished_at IS NULL
+                ORDER BY started_at ASC, id ASC
+                LIMIT ?
+                """,
+                (max(1, min(int(limit or 500), 2000)),),
+            ).fetchall()
+        return [_scan_cycle_row_to_dict(row) for row in rows]
+
+    def abandon_scan_cycle(
+        self,
+        cycle_id: int,
+        *,
+        recovery_worker_id: str,
+        reason: str,
+        prior_worker_id: str = "",
+        expected_worker_id: str = "",
+        expected_hostname: str = "",
+        expected_process_id: int = 0,
+    ) -> bool:
+        """Idempotently terminalize one confirmed abandoned cycle without rewriting partial counters."""
+        now = now_iso()
+        with self.connect() as connection:
+            trace_row = connection.execute(
+                "SELECT COUNT(*) AS count FROM listing_decision_traces WHERE scan_cycle_id = ?",
+                (int(cycle_id),),
+            ).fetchone()
+            trace_count = int(trace_row["count"] if trace_row else 0)
+            result = connection.execute(
+                """
+                UPDATE scan_cycles
+                SET status = 'abandoned', finished_at = ?, abandoned_at = ?,
+                    worker_id = CASE WHEN worker_id = '' THEN ? ELSE worker_id END,
+                    abandoned_by_worker_id = ?, abandonment_reason = ?,
+                    partial_trace_count = ?,
+                    error_message = CASE WHEN error_message = '' THEN ? ELSE error_message END,
+                    updated_at = ?
+                WHERE id = ? AND status = 'started' AND finished_at IS NULL
+                  AND worker_id = ? AND hostname = ? AND process_id = ?
+                """,
+                (
+                    now, now, prior_worker_id[:255], recovery_worker_id[:255], reason[:500], trace_count,
+                    f"Abandoned scan recovered: {reason}"[:1000], now, int(cycle_id),
+                    expected_worker_id[:255], expected_hostname[:255], int(expected_process_id),
+                ),
+            )
+        return bool(result.rowcount)
+
+    def latest_scan_cycle_for_modes(self, modes: list[str], *, status: str | None = None) -> dict[str, Any] | None:
+        if not modes:
+            return None
+        placeholders = ",".join("?" for _ in modes)
+        status_clause = " AND status = ?" if status else ""
+        params: list[Any] = [*modes]
+        if status:
+            params.append(status)
+        with self.connect() as connection:
+            row = connection.execute(
+                f"SELECT * FROM scan_cycles WHERE mode IN ({placeholders}){status_clause} "
+                "ORDER BY COALESCE(finished_at, started_at) DESC, id DESC LIMIT 1",
+                params,
+            ).fetchone()
+        return _scan_cycle_row_to_dict(row) if row else None
+
+    def recent_scan_cycles_for_modes(self, modes: list[str], *, limit: int = 100) -> list[dict[str, Any]]:
+        if not modes:
+            return []
+        placeholders = ",".join("?" for _ in modes)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM scan_cycles WHERE mode IN ({placeholders}) "
+                "ORDER BY started_at DESC, id DESC LIMIT ?",
+                [*modes, max(1, min(int(limit or 100), 500))],
+            ).fetchall()
+        return [_scan_cycle_row_to_dict(row) for row in rows]
+
+    def latest_successful_scan_cycle_for_modes(self, modes: list[str]) -> dict[str, Any] | None:
+        if not modes:
+            return None
+        placeholders = ",".join("?" for _ in modes)
+        with self.connect() as connection:
+            row = connection.execute(
+                f"SELECT * FROM scan_cycles WHERE mode IN ({placeholders}) "
+                "AND status = 'completed' AND items_scored > 0 "
+                "ORDER BY finished_at DESC, started_at DESC, id DESC LIMIT 1",
+                modes,
+            ).fetchone()
+        return _scan_cycle_row_to_dict(row) if row else None
+
     def update_source_status(
         self,
         source: str,
@@ -3200,7 +4396,7 @@ class Storage:
         now = now_iso()
         with self.connect() as connection:
             item = connection.execute(
-                "SELECT id FROM marketplace_items WHERE marketplace = ? AND marketplace_item_id = ? LIMIT 1",
+                "SELECT id, retention_managed FROM marketplace_items WHERE marketplace = ? AND marketplace_item_id = ? LIMIT 1",
                 (marketplace, str(item_id)),
             ).fetchone()
             if not item:
@@ -3208,9 +4404,9 @@ class Storage:
             connection.execute(
                 """
                 INSERT INTO listing_decision_traces (
-                    user_id, marketplace_item_id, scan_cycle_id, trace_json, created_at
+                    user_id, marketplace_item_id, scan_cycle_id, trace_json, retention_managed, created_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id, marketplace_item_id, scan_cycle_id) DO UPDATE SET
                     trace_json = excluded.trace_json,
                     created_at = excluded.created_at
@@ -3220,6 +4416,7 @@ class Storage:
                     int(item["id"]),
                     int(scan_cycle_id),
                     json.dumps(trace, sort_keys=True),
+                    int(item["retention_managed"] or 0),
                     now,
                 ),
             )
@@ -3391,15 +4588,78 @@ class Storage:
         max_priority_review_item_age_hours: int = DEFAULT_MAX_PRIORITY_REVIEW_ITEM_AGE_HOURS,
         max_active_queue_item_age_hours: int = DEFAULT_MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS,
     ) -> dict[str, Any]:
-        items = self.list_user_items(
-            user_id,
-            limit=500,
-            include_ignored=True,
-            include_stale=True,
-            max_alert_item_age_minutes=max_alert_item_age_minutes,
-            max_priority_review_item_age_hours=max_priority_review_item_age_hours,
-            max_active_queue_item_age_hours=max_active_queue_item_age_hours,
-        )
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    mi.marketplace_item_id AS item_id,
+                    mi.item_origin_at AS item_origin_at,
+                    mi.marketplace_origin_at AS marketplace_origin_at,
+                    mi.first_seen_at AS first_seen_at,
+                    mi.found_at AS found_at,
+                    mi.availability_status AS availability_status,
+                    mi.buying_option_summary AS buying_option_summary,
+                    mi.item_end_at AS item_end_at,
+                    CASE
+                        WHEN mi.raw_description IS NULL OR mi.raw_description = '' THEN ''
+                        ELSE '1'
+                    END AS raw_description,
+                    uis.updated_at AS updated_at,
+                    uis.score AS score,
+                    uis.status AS status,
+                    uis.model AS model,
+                    uis.resale_value AS resale_value,
+                    uis.resale_low AS resale_low,
+                    uis.resale_mid AS resale_mid,
+                    uis.resale_high AS resale_high,
+                    uis.profit_low AS profit_low,
+                    uis.profit_mid AS profit_mid,
+                    uis.profit_high AS profit_high,
+                    uis.resale_source AS resale_source,
+                    uis.storage_resale_warning AS storage_resale_warning,
+                    uis.storage_capacity AS storage_capacity,
+                    uis.estimated_parts_cost_available AS estimated_parts_cost_available,
+                    uis.estimated_profit AS estimated_profit,
+                    uis.estimated_profit_available AS estimated_profit_available,
+                    uis.whole_phone_confidence_passed AS whole_phone_confidence_passed,
+                    uis.whole_phone_score AS whole_phone_score,
+                    uis.has_repair_issue AS has_repair_issue,
+                    uis.manual_review_needed AS manual_review_needed,
+                    uis.manual_review_reason AS manual_review_reason,
+                    uis.alert_eligible AS alert_eligible,
+                    uis.listing_classification_flags AS listing_classification_flags,
+                    uis.first_scored_at AS first_scored_at,
+                    uis.item_type AS item_type,
+                    uis.item_type_reason AS item_type_reason,
+                    uis.scorer_hash AS scorer_hash,
+                    uis.rules_hash AS rules_hash,
+                    uis.repair_hash AS repair_hash,
+                    uis.resale_hash AS resale_hash,
+                    (SELECT f.label FROM user_item_feedback f WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id) AS feedback_label,
+                    (SELECT o.status FROM user_item_outcomes o WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS outcome_status,
+                    (SELECT o.actual_net_profit FROM user_item_outcomes o WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS actual_net_profit,
+                    uis.user_status AS user_status,
+                    uis.promoted_at AS promoted_at,
+                    uis.hard_reject_flags AS hard_reject_flags,
+                    uis.positive_flags AS positive_flags,
+                    uis.risk_flags AS risk_flags,
+                    uis.alerted_at AS alerted_at,
+                    mi.last_availability_checked_at AS last_availability_checked_at
+                FROM user_item_states uis
+                INNER JOIN marketplace_items mi ON mi.id = uis.marketplace_item_id
+                WHERE uis.user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+        items = [
+            _row_to_dict(
+                _joined_item_row_dict(row),
+                max_alert_item_age_minutes=max_alert_item_age_minutes,
+                max_priority_review_item_age_hours=max_priority_review_item_age_hours,
+                max_active_queue_item_age_hours=max_active_queue_item_age_hours,
+            )
+            for row in rows
+        ]
         counts: dict[str, int] = {}
         user_counts: dict[str, int] = {}
         for item in items:
@@ -3479,7 +4739,10 @@ class Storage:
         rows = connection.execute("SELECT * FROM items ORDER BY found_at ASC, item_id ASC").fetchall()
         for row in rows:
             legacy_item = _row_to_dict(dict(row))
-            marketplace_row = self._upsert_marketplace_item(connection, legacy_item, marketplace="ebay", now=legacy_item.get("updated_at") or now_iso())
+            marketplace_row = self._upsert_marketplace_item(
+                connection, legacy_item, marketplace="ebay",
+                now=legacy_item.get("updated_at") or now_iso(), legacy_import=True,
+            )
             self._upsert_user_item_state(
                 connection,
                 user_id,
@@ -3488,6 +4751,7 @@ class Storage:
                 now=legacy_item.get("updated_at") or now_iso(),
                 preserve_existing=False,
                 created_at=legacy_item.get("found_at") or legacy_item.get("updated_at") or now_iso(),
+                legacy_import=True,
             )
 
     def _migrate_legacy_ignores_to_user(self, connection: sqlite3.Connection) -> None:
@@ -3578,6 +4842,7 @@ class Storage:
         *,
         marketplace: str,
         now: str,
+        legacy_import: bool = False,
     ) -> dict[str, Any]:
         payload = {
             "marketplace": marketplace,
@@ -3594,6 +4859,9 @@ class Storage:
             "seller_feedback_score": item.get("seller_feedback_score"),
             "raw_description": item.get("raw_description"),
             "item_origin_at": item.get("item_origin_at") or item.get("found_at") or now,
+            "marketplace_origin_at": item.get("marketplace_origin_at") or item.get("item_origin_at") or item.get("found_at"),
+            "first_seen_at": None if legacy_import else now,
+            "retention_managed": 0 if legacy_import else 1,
             "item_creation_at": item.get("item_creation_at"),
             "found_at": item.get("found_at") or item.get("item_origin_at") or now,
             "updated_at": now,
@@ -3603,22 +4871,34 @@ class Storage:
             "item_end_at": item.get("item_end_at"),
             "last_availability_checked_at": item.get("last_availability_checked_at"),
             "availability_note": item.get("availability_note") or "",
+            "detail_fetch_attempted_at": item.get("detail_fetch_attempted_at"),
+            "detail_fetch_status": item.get("detail_fetch_status") or "not_requested",
+            "detail_fetch_reason": item.get("detail_fetch_reason") or "",
+            "detail_fetch_recovered_fields": json.dumps(item.get("detail_fetch_recovered_fields") or []),
+            "detail_fetch_failure_reason": item.get("detail_fetch_failure_reason") or "",
+            "detail_fetch_retry_after": item.get("detail_fetch_retry_after"),
         }
         connection.execute(
             """
             INSERT INTO marketplace_items (
                 marketplace, marketplace_item_id, title, price, shipping, total_cost,
                 condition, item_url, image_url, seller_username, seller_feedback_percentage,
-                seller_feedback_score, raw_description, item_origin_at, item_creation_at,
+                seller_feedback_score, raw_description, item_origin_at, marketplace_origin_at,
+                first_seen_at, retention_managed, item_creation_at,
                 found_at, updated_at, raw_json, availability_status, buying_option_summary,
-                item_end_at, last_availability_checked_at, availability_note
+                item_end_at, last_availability_checked_at, availability_note,
+                detail_fetch_attempted_at, detail_fetch_status, detail_fetch_reason,
+                detail_fetch_recovered_fields, detail_fetch_failure_reason, detail_fetch_retry_after
             )
             VALUES (
                 :marketplace, :marketplace_item_id, :title, :price, :shipping, :total_cost,
                 :condition, :item_url, :image_url, :seller_username, :seller_feedback_percentage,
-                :seller_feedback_score, :raw_description, :item_origin_at, :item_creation_at,
+                :seller_feedback_score, :raw_description, :item_origin_at, :marketplace_origin_at,
+                :first_seen_at, :retention_managed, :item_creation_at,
                 :found_at, :updated_at, :raw_json, :availability_status, :buying_option_summary,
-                :item_end_at, :last_availability_checked_at, :availability_note
+                :item_end_at, :last_availability_checked_at, :availability_note,
+                :detail_fetch_attempted_at, :detail_fetch_status, :detail_fetch_reason,
+                :detail_fetch_recovered_fields, :detail_fetch_failure_reason, :detail_fetch_retry_after
             )
             ON CONFLICT(marketplace, marketplace_item_id) DO UPDATE SET
                 title = excluded.title,
@@ -3633,6 +4913,7 @@ class Storage:
                 seller_feedback_score = excluded.seller_feedback_score,
                 raw_description = excluded.raw_description,
                 item_origin_at = COALESCE(excluded.item_origin_at, marketplace_items.item_origin_at, marketplace_items.found_at),
+                marketplace_origin_at = COALESCE(excluded.marketplace_origin_at, marketplace_items.marketplace_origin_at),
                 item_creation_at = COALESCE(excluded.item_creation_at, marketplace_items.item_creation_at),
                 found_at = COALESCE(marketplace_items.found_at, excluded.found_at),
                 updated_at = excluded.updated_at,
@@ -3641,7 +4922,13 @@ class Storage:
                 buying_option_summary = excluded.buying_option_summary,
                 item_end_at = excluded.item_end_at,
                 last_availability_checked_at = COALESCE(excluded.last_availability_checked_at, marketplace_items.last_availability_checked_at),
-                availability_note = excluded.availability_note
+                availability_note = excluded.availability_note,
+                detail_fetch_attempted_at = COALESCE(excluded.detail_fetch_attempted_at, marketplace_items.detail_fetch_attempted_at),
+                detail_fetch_status = CASE WHEN excluded.detail_fetch_status = 'not_requested' THEN marketplace_items.detail_fetch_status ELSE excluded.detail_fetch_status END,
+                detail_fetch_reason = CASE WHEN excluded.detail_fetch_status = 'not_requested' THEN marketplace_items.detail_fetch_reason ELSE excluded.detail_fetch_reason END,
+                detail_fetch_recovered_fields = CASE WHEN excluded.detail_fetch_status = 'not_requested' THEN marketplace_items.detail_fetch_recovered_fields ELSE excluded.detail_fetch_recovered_fields END,
+                detail_fetch_failure_reason = CASE WHEN excluded.detail_fetch_status = 'not_requested' THEN marketplace_items.detail_fetch_failure_reason ELSE excluded.detail_fetch_failure_reason END,
+                detail_fetch_retry_after = COALESCE(excluded.detail_fetch_retry_after, marketplace_items.detail_fetch_retry_after)
             """,
             payload,
         )
@@ -3663,8 +4950,14 @@ class Storage:
         now: str,
         preserve_existing: bool = True,
         created_at: str | None = None,
+        legacy_import: bool = False,
     ) -> None:
         state_created_at = created_at or item.get("found_at") or now
+        forward_row = connection.execute(
+            "SELECT retention_managed FROM marketplace_items WHERE id = ?",
+            (marketplace_row_id,),
+        ).fetchone()
+        first_scored_at = now if forward_row and forward_row["retention_managed"] and item.get("_scored_for_user") else None
         payload = {
             "user_id": user_id,
             "marketplace_item_id": marketplace_row_id,
@@ -3712,6 +5005,13 @@ class Storage:
             "manual_review_reason": item.get("manual_review_reason") or "",
             "alert_eligible": int(bool(item.get("alert_eligible", False))),
             "listing_classification_flags": json.dumps(item.get("listing_classification_flags", [])),
+            "first_scored_at": first_scored_at,
+            "item_type": None if legacy_import else item.get("item_type") or "ambiguous",
+            "item_type_reason": item.get("item_type_reason") or "",
+            "scorer_hash": item.get("scorer_hash") or "",
+            "rules_hash": item.get("rules_hash") or "",
+            "repair_hash": item.get("repair_hash") or "",
+            "resale_hash": item.get("resale_hash") or "",
             "user_status": item.get("user_status") or "new",
             "user_note": item.get("user_note") or "",
             "reviewed_at": item.get("reviewed_at"),
@@ -3781,7 +5081,9 @@ class Storage:
                 estimated_profit_available, parts_pricing_status, parts_pricing_note, parts_pricing_label,
                 pricing_warning, manual_review_allowed, whole_phone_confidence_passed, whole_phone_score,
                 has_repair_issue, manual_review_needed, manual_review_reason, alert_eligible,
-                listing_classification_flags, user_status, user_note, reviewed_at, ignored_at, watched_at,
+                listing_classification_flags, first_scored_at, item_type, item_type_reason,
+                scorer_hash, rules_hash, repair_hash, resale_hash,
+                user_status, user_note, reviewed_at, ignored_at, watched_at,
                 promoted_at, rejected_by_user_at, user_reject_reason, ignored_reason, ignored_seller,
                 updated_by_user_at, hard_reject_flags, positive_flags, risk_flags, alerted_at,
                 promoted_notification_sent_at, created_at, updated_at
@@ -3796,7 +5098,9 @@ class Storage:
                 :estimated_profit_available, :parts_pricing_status, :parts_pricing_note, :parts_pricing_label,
                 :pricing_warning, :manual_review_allowed, :whole_phone_confidence_passed, :whole_phone_score,
                 :has_repair_issue, :manual_review_needed, :manual_review_reason, :alert_eligible,
-                :listing_classification_flags, :user_status, :user_note, :reviewed_at, :ignored_at, :watched_at,
+                :listing_classification_flags, :first_scored_at, :item_type, :item_type_reason,
+                :scorer_hash, :rules_hash, :repair_hash, :resale_hash,
+                :user_status, :user_note, :reviewed_at, :ignored_at, :watched_at,
                 :promoted_at, :rejected_by_user_at, :user_reject_reason, :ignored_reason, :ignored_seller,
                 :updated_by_user_at, :hard_reject_flags, :positive_flags, :risk_flags, :alerted_at,
                 :promoted_notification_sent_at, :created_at, :updated_at
@@ -3846,6 +5150,13 @@ class Storage:
                 manual_review_reason = excluded.manual_review_reason,
                 alert_eligible = excluded.alert_eligible,
                 listing_classification_flags = excluded.listing_classification_flags,
+                first_scored_at = COALESCE(user_item_states.first_scored_at, excluded.first_scored_at),
+                item_type = excluded.item_type,
+                item_type_reason = excluded.item_type_reason,
+                scorer_hash = excluded.scorer_hash,
+                rules_hash = excluded.rules_hash,
+                repair_hash = excluded.repair_hash,
+                resale_hash = excluded.resale_hash,
                 user_status = {user_status_expr},
                 user_note = {user_note_expr},
                 reviewed_at = COALESCE(excluded.reviewed_at, user_item_states.reviewed_at),
@@ -3915,10 +5226,14 @@ class Storage:
         connection.execute(
             """
             INSERT INTO user_notification_settings (
-                user_id, discord_webhook, discord_enabled, alerts_enabled, notify_best_finds,
-                notify_priority_review, created_at, updated_at
+                user_id, discord_webhook, discord_enabled, use_global_discord_webhook, alerts_enabled, notify_best_finds,
+                notify_priority_review, send_gem_immediately, send_profitable_immediately,
+                review_delivery_mode, max_review_alerts_per_hour, duplicate_suppression_hours,
+                gem_min_expected_profit, profitable_min_expected_profit, review_min_expected_profit,
+                review_min_upside_profit, gem_min_roi, profitable_min_roi, review_min_roi,
+                max_listing_age_minutes, created_at, updated_at
             )
-            VALUES (?, '', 0, 1, 1, 1, ?, ?)
+            VALUES (?, '', 0, 0, 1, 1, 1, 1, 1, 'immediate', 2, 72, 75, 50, 25, 60, 0.25, 0.15, 0.05, 360, ?, ?)
             ON CONFLICT(user_id) DO NOTHING
             """,
             (user_id, now, now),
@@ -4033,8 +5348,15 @@ class _SQLAlchemyConnectionShim:
         return _SQLAlchemyResultShim(result)
 
 
+def _postgres_driver_connect_args(database_url: str) -> dict[str, Any]:
+    """Avoid stale server-side prepared plans when a pooled PostgreSQL schema changes."""
+    if str(database_url).lower().split(":", 1)[0] == "postgresql+psycopg":
+        return {"prepare_threshold": None}
+    return {}
+
+
 class PostgresStorage(Storage):
-    def __init__(self, database_url: str):
+    def __init__(self, database_url: str, *, initialize: bool = True):
         self.path = Path(":postgres:")
         self._memory_connection = None
         self.database_url = _normalize_database_url(database_url)
@@ -4043,8 +5365,10 @@ class PostgresStorage(Storage):
             future=True,
             pool_pre_ping=True,
             pool_recycle=300,
+            connect_args=_postgres_driver_connect_args(self.database_url),
         )
-        self.init_db()
+        if initialize:
+            self.init_db()
 
     def connect(self) -> _SQLAlchemyConnectionShim:
         return _SQLAlchemyConnectionShim(self.engine)
@@ -4230,6 +5554,7 @@ class PostgresStorage(Storage):
         user_id: int | None = None,
         process_id: int = 0,
         hostname: str = "",
+        worker_id: str = "",
         auth_required: bool = False,
         background_poll_enabled: bool = False,
         background_poll_seconds: int = 0,
@@ -4269,6 +5594,7 @@ class PostgresStorage(Storage):
                         retry_after_seconds=int(retry_after_seconds) if retry_after_seconds is not None else None,
                         process_id=int(process_id or 0),
                         hostname=hostname[:255],
+                        worker_id=worker_id[:255],
                         auth_required=int(bool(auth_required)),
                         background_poll_enabled=int(bool(background_poll_enabled)),
                         background_poll_seconds=int(background_poll_seconds or 0),
@@ -4322,11 +5648,30 @@ def _notification_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["_discord_webhook_raw"] = data.get("discord_webhook") or ""
     data["discord_enabled"] = bool(data.get("discord_enabled"))
+    data["push_enabled"] = bool(data.get("push_enabled", True))
+    data["use_global_discord_webhook"] = bool(data.get("use_global_discord_webhook"))
     data["alerts_enabled"] = bool(data.get("alerts_enabled"))
     data["notify_best_finds"] = bool(data.get("notify_best_finds"))
     data["notify_priority_review"] = bool(data.get("notify_priority_review"))
+    data["send_gem_immediately"] = bool(data.get("send_gem_immediately", True))
+    data["send_profitable_immediately"] = bool(data.get("send_profitable_immediately", True))
+    data["catchup_enabled"] = bool(data.get("catchup_enabled", True))
+    data["catchup_include_review"] = bool(data.get("catchup_include_review", False))
     data["discord_webhook_configured"] = bool(data.get("discord_webhook"))
     data["discord_webhook"] = ""
+    return data
+
+
+def _push_subscription_row_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    data["enabled"] = bool(data.get("enabled"))
+    return data
+
+
+def _notification_attempt_row_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    for key in ("attempted", "sent", "failed", "deduplicated", "skipped"):
+        data[key] = bool(data.get(key))
     return data
 
 
@@ -4420,9 +5765,10 @@ def _row_to_dict(
     max_active_queue_item_age_hours: int = DEFAULT_MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS,
 ) -> dict[str, Any]:
     data = dict(row)
-    for key in ("hard_reject_flags", "positive_flags", "risk_flags", "listing_classification_flags", "raw_json"):
+    for key in ("hard_reject_flags", "positive_flags", "risk_flags", "listing_classification_flags", "raw_json", "detail_fetch_recovered_fields"):
         try:
-            data[key] = json.loads(data[key]) if data[key] else [] if key != "raw_json" else {}
+            raw_value = data.get(key)
+            data[key] = json.loads(raw_value) if raw_value else [] if key != "raw_json" else {}
         except json.JSONDecodeError:
             data[key] = [] if key != "raw_json" else {}
     for key in (
@@ -4607,7 +5953,7 @@ def _has_reviewable_description_evidence(item: dict[str, Any]) -> bool:
             or (strong_proof_count >= 1 and has_description_evidence)
             or (
                 has_description_evidence
-                and float(item.get("whole_phone_confidence_score") or 0) >= 7
+                and float(item.get("whole_phone_score") or 0) >= 7
             )
         )
     )

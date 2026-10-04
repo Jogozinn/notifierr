@@ -9,7 +9,7 @@ from sqlalchemy.engine import Engine
 
 from .config import Settings, load_settings
 from .db_models import metadata
-from .storage import PostgresStorage, Storage
+from .storage import PostgresStorage, Storage, _postgres_driver_connect_args
 
 
 DEFAULT_POOL_RECYCLE_SECONDS = 300
@@ -67,6 +67,8 @@ def create_sqlalchemy_engine(database_url: str, *, echo: bool = False) -> Engine
     connect_args: dict[str, Any] = {}
     if normalized.startswith("sqlite"):
         connect_args["check_same_thread"] = False
+    else:
+        connect_args.update(_postgres_driver_connect_args(normalized))
     return create_engine(
         normalized,
         future=True,
@@ -89,7 +91,11 @@ def select_storage_class(settings: Settings) -> type[Storage]:
 def create_storage(settings: Settings):
     storage_class = select_storage_class(settings)
     if storage_class is PostgresStorage:
-        return PostgresStorage(get_database_url(settings))
+        storage = PostgresStorage(get_database_url(settings), initialize=settings.runtime_env != "production")
+        if settings.runtime_env == "production":
+            from .schema import check_schema
+            check_schema(storage.engine)
+        return storage
     return Storage(settings.sqlite_path)
 
 

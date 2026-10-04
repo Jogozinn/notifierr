@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addIgnoredKeyword,
   clearStoredToken,
@@ -9,7 +9,8 @@ import {
   deleteUserKeyword,
   getAuthStatus,
   getCurrentUser,
-  getItems,
+  getDashboardItems,
+  getPollingStatus,
   getUserKeywords,
   getUserNotifications,
   getUserRepairOverrides,
@@ -29,6 +30,8 @@ import {
   testDiscordNotification,
   updateGlobalPartCost,
   updateItemCorrection,
+  updateItemFeedback,
+  updateItemOutcome,
   updateUserKeyword,
   updateUserNotifications,
   updateUserSettings,
@@ -38,10 +41,17 @@ import {
 import AdminPanel from "./components/AdminPanel.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import ItemTable from "./components/ItemTable.jsx";
+import PushSettings from "./components/PushSettings.jsx";
+import { shouldRefreshDashboard } from "./autoscanStatus.js";
+import { notificationStatus } from "./notificationStatus.js";
 
 const TABS = {
-  high_quality: "Best Finds",
-  priority_review: "Priority Review",
+  high_quality: "GEM",
+  profitable: "PROFITABLE",
+  review: "REVIEW",
+  unsent_actionable: "Unsent Actionable",
+  missed_opportunities: "Missed Opportunities",
+  priority_review: "Legacy Priority Review",
   needs_data: "Needs Data",
   watched: "Watched",
   promoted: "Promoted",
@@ -52,6 +62,7 @@ const TABS = {
 
 const PRIORITY_REVIEW_MIN_PROFIT = 37.5;
 const PRIORITY_REVIEW_UPSIDE = 75;
+const DASHBOARD_PAGE_SIZE = 50;
 const REVIEWABLE_PRICING_REASONS = [
   "Expected profit below threshold",
   "Only upside case works",
@@ -69,7 +80,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("priority_review");
   const [userSelectedTab, setUserSelectedTab] = useState(false);
   const [stats, setStats] = useState(null);
+  const [pollingStatus, setPollingStatus] = useState(null);
+  const lastBackgroundCycleRef = useRef(null);
   const [items, setItems] = useState([]);
+  const [dashboardCounts, setDashboardCounts] = useState({});
+  const [dashboardTotal, setDashboardTotal] = useState(0);
+  const [pageOffset, setPageOffset] = useState(0);
   const [authLoading, setAuthLoading] = useState(true);
   const [authRequired, setAuthRequired] = useState(false);
   const [authUser, setAuthUser] = useState(null);
@@ -102,14 +118,36 @@ export default function App() {
   const [newKeyword, setNewKeyword] = useState("");
   const [discordWebhookInput, setDiscordWebhookInput] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshingDashboard, setRefreshingDashboard] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [includeIgnored, setIncludeIgnored] = useState(false);
   const [includeStale, setIncludeStale] = useState(false);
   const [searchText, setSearchText] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [sortBy, setSortBy] = useState("newest");
   const [keyword, setKeyword] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const dashboardRequestRef = useRef(0);
+
+  useEffect(() => {
+    const linkedItem = new URLSearchParams(window.location.search).get("item");
+    if (linkedItem) {
+      setActiveTab("all");
+      setUserSelectedTab(true);
+      setIncludeStale(true);
+      setSearchText(linkedItem);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(searchText), 250);
+    return () => clearTimeout(timer);
+  }, [searchText]);
+
+  useEffect(() => {
+    setPageOffset(0);
+  }, [activeTab, sortBy, debouncedSearch, includeIgnored, includeStale]);
 
   const handleAuthRequired = useCallback(() => {
     clearStoredToken();
@@ -127,29 +165,58 @@ export default function App() {
     setAuthUser(status?.current_user || null);
   }, []);
 
-  const loadDashboard = useCallback(async () => {
+  const loadDashboard = useCallback(async (options = {}) => {
+    const { background = false } = options;
+    const requestId = dashboardRequestRef.current + 1;
+    dashboardRequestRef.current = requestId;
     setError("");
-    setLoading(true);
+    if (background) {
+      setRefreshingDashboard(true);
+    } else {
+      setLoading(true);
+    }
     try {
-      const [nextStats, nextItems] = await Promise.all([
+      const [nextStats, nextPage] = await Promise.all([
         getStats(),
-        getItems({
+        getDashboardItems({
+          queue: activeTab,
+          sort: sortBy,
+          search: debouncedSearch,
+          offset: pageOffset,
+          limit: DASHBOARD_PAGE_SIZE,
           includeIgnored: includeIgnored || activeTab === "ignored",
           includeStale: includeStale || activeTab === "all",
         }),
       ]);
+      if (dashboardRequestRef.current !== requestId) {
+        return;
+      }
       setStats(nextStats);
-      setItems(nextItems);
+      setItems(nextPage.items);
+      setDashboardCounts(nextPage.counts);
+      setDashboardTotal(nextPage.total);
+      if (pageOffset > 0 && pageOffset >= nextPage.total) {
+        setPageOffset(Math.max(0, Math.floor((nextPage.total - 1) / DASHBOARD_PAGE_SIZE) * DASHBOARD_PAGE_SIZE));
+      }
     } catch (err) {
+      if (dashboardRequestRef.current !== requestId) {
+        return;
+      }
       if (err.status === 401) {
         handleAuthRequired();
         return;
       }
       setError(err.message);
     } finally {
-      setLoading(false);
+      if (dashboardRequestRef.current === requestId) {
+        if (background) {
+          setRefreshingDashboard(false);
+        } else {
+          setLoading(false);
+        }
+      }
     }
-  }, [activeTab, handleAuthRequired, includeIgnored, includeStale]);
+  }, [activeTab, debouncedSearch, handleAuthRequired, includeIgnored, includeStale, pageOffset, sortBy]);
 
   const loadSettingsPanel = useCallback(async () => {
     setError("");
@@ -230,6 +297,36 @@ export default function App() {
     }
     loadDashboard();
   }, [authLoading, authRequired, authUser, loadDashboard]);
+
+  useEffect(() => {
+    if (authLoading || (authRequired && !authUser)) {
+      return undefined;
+    }
+    let cancelled = false;
+    async function refreshPollingStatus() {
+      if (document.hidden || navigator.onLine === false) {
+        return;
+      }
+      try {
+        const next = await getPollingStatus();
+        if (cancelled) return;
+        setPollingStatus(next);
+        const completedCycle = next.last_background_cycle_id ?? next.last_background_succeeded_at;
+        if (shouldRefreshDashboard(lastBackgroundCycleRef.current, next)) {
+          await loadDashboard({ background: true });
+        }
+        lastBackgroundCycleRef.current = completedCycle || lastBackgroundCycleRef.current;
+      } catch (err) {
+        if (!cancelled && err.status === 401) handleAuthRequired();
+      }
+    }
+    refreshPollingStatus();
+    const timer = window.setInterval(refreshPollingStatus, 45000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [authLoading, authRequired, authUser, handleAuthRequired, loadDashboard]);
 
   useEffect(() => {
     if (!stats || userSelectedTab) {
@@ -383,8 +480,14 @@ export default function App() {
     setError("");
     setNotice("");
     try {
-      await testDiscordNotification();
-      setNotice("Discord test notification sent.");
+      const result = await testDiscordNotification();
+      const refreshed = await getUserNotifications();
+      setNotificationSettings(refreshed.notifications);
+      if (result.sent) {
+        setNotice("Discord test notification sent.");
+      } else {
+        setError(result.error || "Discord delivery failed.");
+      }
     } catch (err) {
       if (err.status === 401) {
         handleAuthRequired();
@@ -545,11 +648,17 @@ export default function App() {
     setKeyword("");
   }
 
-  async function runAction(action) {
+  async function runAction(action, options = {}) {
+    const { updateItem = false, refreshDashboard = true } = options;
     setError("");
     setNotice("");
     try {
       const result = await action();
+      if (updateItem && result?.item_id) {
+        setItems((current) => current.map((item) => (
+          item.item_id === result.item_id ? { ...item, ...result } : item
+        )));
+      }
       if (result?.discord_sent) {
         setNotice("Manual promotion sent to Discord.");
       } else if (result?.promotion_error) {
@@ -563,7 +672,17 @@ export default function App() {
       } else if (result?.item) {
         setNotice("Part cost updated and item re-scored.");
       }
-      await loadDashboard();
+      if (refreshDashboard || updateItem) {
+        await loadDashboard();
+      } else {
+        try {
+          setStats(await getStats());
+        } catch (statsErr) {
+          if (statsErr.status === 401) {
+            handleAuthRequired();
+          }
+        }
+      }
     } catch (err) {
       if (err.status === 401) {
         handleAuthRequired();
@@ -573,14 +692,9 @@ export default function App() {
     }
   }
 
-  const visibleItems = useMemo(() => {
-    const filtered = items
-      .filter((item) => tabMatches(item, activeTab))
-      .filter((item) => textMatches(item, searchText));
-    return sortItems(filtered, sortBy, activeTab);
-  }, [activeTab, items, searchText, sortBy]);
-
-  const tabCounts = useMemo(() => buildTabCounts(items), [items]);
+  const visibleItems = items;
+  const tabCounts = dashboardCounts;
+  const effectiveNotificationStatus = notificationStatus(notificationSettings);
 
   if (authLoading) {
     return <main className="app-shell"><div className="empty-state">Loading workspace...</div></main>;
@@ -711,6 +825,7 @@ export default function App() {
 
       <StatsBar
         stats={stats}
+        pollingStatus={pollingStatus}
         counts={tabCounts}
         activeStatus={activeTab}
         onChange={(tab) => {
@@ -755,7 +870,7 @@ export default function App() {
       <section className="content-header compact-header">
         <div>
           <h2>{TABS[activeTab]} listings</h2>
-          <p>{visibleItems.length} visible after filters</p>
+          <p>{dashboardTotal} matching listings{refreshingDashboard ? " · refreshing…" : ""}</p>
         </div>
       </section>
 
@@ -763,31 +878,43 @@ export default function App() {
         items={visibleItems}
         loading={loading}
         isAdmin={authUser?.role === "admin"}
-        onWatch={(item) => runAction(() => watchItem(item.item_id))}
-        onReview={(item) => runAction(() => reviewItem(item.item_id))}
+        onWatch={(item) => runAction(() => watchItem(item.item_id), { updateItem: true, refreshDashboard: false })}
+        onReview={(item) => runAction(() => reviewItem(item.item_id), { updateItem: true, refreshDashboard: false })}
         onIgnore={(item) => {
           const reason = window.prompt("Reason for ignoring this item?", item.ignored_reason || "");
           if (reason !== null) {
-            runAction(() => ignoreItem(item.item_id, reason));
+            runAction(() => ignoreItem(item.item_id, reason), { updateItem: true, refreshDashboard: false });
           }
         }}
         onIgnoreSeller={(item) => {
           const reason = window.prompt("Reason for ignoring this seller?", `Seller: ${item.seller_username || ""}`);
           if (reason !== null) {
-            runAction(() => ignoreSeller(item.item_id, reason));
+            runAction(() => ignoreSeller(item.item_id, reason), { updateItem: true, refreshDashboard: false });
           }
         }}
-        onPromote={(item) => runAction(() => promoteItem(item.item_id))}
+        onPromote={(item) => runAction(() => promoteItem(item.item_id), { updateItem: true, refreshDashboard: false })}
         onReject={(item) => {
           const reason = window.prompt("Reason for rejecting this item?", item.user_reject_reason || "");
           if (reason !== null) {
-            runAction(() => rejectItem(item.item_id, reason));
+            runAction(() => rejectItem(item.item_id, reason), { updateItem: true, refreshDashboard: false });
           }
         }}
         onUpdatePartCost={(item, payload) => runAction(() => updatePartCost(item.model, { ...payload, item_id: item.item_id }))}
         onUpdateGlobalPartCost={(item, payload) => runAction(() => updateGlobalPartCost(item.model, { ...payload, item_id: item.item_id }))}
         onSaveCorrection={(item, payload) => runAction(() => updateItemCorrection(item.item_id, payload))}
         onClearCorrection={(item) => runAction(() => deleteItemCorrection(item.item_id))}
+        onFeedback={(item, feedbackCode) => runAction(
+          () => updateItemCorrection(item.item_id, { feedback_code: feedbackCode }),
+          { updateItem: true, refreshDashboard: false },
+        )}
+        onLabel={(item, label) => runAction(
+          () => updateItemFeedback(item.item_id, label),
+          { refreshDashboard: true },
+        )}
+        onOutcome={(item, payload) => runAction(
+          () => updateItemOutcome(item.item_id, payload),
+          { refreshDashboard: true },
+        )}
         onNote={(item) => {
           const note = window.prompt("Note for this listing", item.user_note || "");
           if (note !== null) {
@@ -795,6 +922,13 @@ export default function App() {
           }
         }}
       />
+      {dashboardTotal > DASHBOARD_PAGE_SIZE ? (
+        <nav className="dashboard-pagination" aria-label="Listing pages">
+          <button type="button" disabled={pageOffset === 0} onClick={() => setPageOffset((current) => Math.max(0, current - DASHBOARD_PAGE_SIZE))}>Previous</button>
+          <span>{pageOffset + 1}–{Math.min(pageOffset + DASHBOARD_PAGE_SIZE, dashboardTotal)} of {dashboardTotal}</span>
+          <button type="button" disabled={pageOffset + DASHBOARD_PAGE_SIZE >= dashboardTotal} onClick={() => setPageOffset((current) => current + DASHBOARD_PAGE_SIZE)}>Next</button>
+        </nav>
+      ) : null}
 
       {settingsOpen ? (
         <section className="settings-overlay" aria-label="User settings">
@@ -888,7 +1022,9 @@ export default function App() {
               <form className="settings-form settings-section" onSubmit={handleSaveNotifications}>
                 <div className="settings-section-header">
                   <h3>Notifications</h3>
-                  <p>{notificationSettings.discord_webhook_configured ? "Webhook configured" : "No webhook configured"}</p>
+                  <p className={`notification-readiness notification-readiness-${effectiveNotificationStatus.tone}`}>
+                    {effectiveNotificationStatus.label}
+                  </p>
                 </div>
                 <div className="settings-grid">
                   <label>
@@ -902,6 +1038,16 @@ export default function App() {
                     Discord enabled
                   </label>
                   <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.push_enabled)} onChange={(event) => setNotificationSettings((current) => ({ ...current, push_enabled: event.target.checked }))} />
+                    Phone and browser push enabled
+                  </label>
+                  {notificationSettings.global_discord_webhook_configured ? (
+                    <label className="toggle-control">
+                      <input type="checkbox" checked={Boolean(notificationSettings.use_global_discord_webhook)} onChange={(event) => setNotificationSettings((current) => ({ ...current, use_global_discord_webhook: event.target.checked }))} />
+                      Use configured global Discord destination
+                    </label>
+                  ) : null}
+                  <label className="toggle-control">
                     <input type="checkbox" checked={Boolean(notificationSettings.alerts_enabled)} onChange={(event) => setNotificationSettings((current) => ({ ...current, alerts_enabled: event.target.checked }))} />
                     Alerts enabled
                   </label>
@@ -913,15 +1059,43 @@ export default function App() {
                     <input type="checkbox" checked={Boolean(notificationSettings.notify_priority_review)} onChange={(event) => setNotificationSettings((current) => ({ ...current, notify_priority_review: event.target.checked }))} />
                     Notify priority review
                   </label>
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.send_gem_immediately)} onChange={(event) => setNotificationSettings((current) => ({ ...current, send_gem_immediately: event.target.checked }))} />
+                    Send GEM immediately
+                  </label>
+                  <label className="toggle-control">
+                    <input type="checkbox" checked={Boolean(notificationSettings.send_profitable_immediately)} onChange={(event) => setNotificationSettings((current) => ({ ...current, send_profitable_immediately: event.target.checked }))} />
+                    Send PROFITABLE immediately
+                  </label>
+                </div>
+                <div className="settings-grid">
+                  <label><span>REVIEW delivery</span><select value={notificationSettings.review_delivery_mode || "immediate"} onChange={(event) => setNotificationSettings((current) => ({ ...current, review_delivery_mode: event.target.value }))}><option value="immediate">Immediate</option><option value="digest">Digest</option><option value="off">Off</option></select></label>
+                  <NumberSetting label="Max REVIEW alerts/hour" field="max_review_alerts_per_hour" value={notificationSettings.max_review_alerts_per_hour} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Duplicate suppression hours" field="duplicate_suppression_hours" value={notificationSettings.duplicate_suppression_hours} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Meaningful price drop ($)" field="meaningful_price_drop_amount" value={notificationSettings.meaningful_price_drop_amount} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Meaningful price drop (ratio)" field="meaningful_price_drop_percent" value={notificationSettings.meaningful_price_drop_percent} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Meaningful profit increase ($)" field="meaningful_profit_increase_amount" value={notificationSettings.meaningful_profit_increase_amount} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Meaningful profit increase (ratio)" field="meaningful_profit_increase_percent" value={notificationSettings.meaningful_profit_increase_percent} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Meaningful ROI increase (ratio)" field="meaningful_roi_increase" value={notificationSettings.meaningful_roi_increase} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Catch-up batch size" field="catchup_batch_size" value={notificationSettings.catchup_batch_size} setSettings={setNotificationSettings} />
+                  <NumberSetting label="GEM minimum profit" field="gem_min_expected_profit" value={notificationSettings.gem_min_expected_profit} setSettings={setNotificationSettings} />
+                  <NumberSetting label="PROFITABLE minimum profit" field="profitable_min_expected_profit" value={notificationSettings.profitable_min_expected_profit} setSettings={setNotificationSettings} />
+                  <NumberSetting label="REVIEW minimum expected profit" field="review_min_expected_profit" value={notificationSettings.review_min_expected_profit} setSettings={setNotificationSettings} />
+                  <NumberSetting label="REVIEW minimum upside" field="review_min_upside_profit" value={notificationSettings.review_min_upside_profit} setSettings={setNotificationSettings} />
+                  <NumberSetting label="Maximum listing age (minutes)" field="max_listing_age_minutes" value={notificationSettings.max_listing_age_minutes} setSettings={setNotificationSettings} />
                 </div>
                 <div className="settings-actions-row">
                   <button className="primary-button" type="submit" disabled={settingsSaving}>
                     {settingsSaving ? "Saving..." : "Save notifications"}
                   </button>
-                  <button type="button" onClick={handleTestDiscord} disabled={!notificationSettings.discord_webhook_configured}>
+                  <button type="button" onClick={handleTestDiscord} disabled={!notificationSettings.notification_ready}>
                     Test Discord
                   </button>
                 </div>
+                <PushSettings onChanged={async () => {
+                  const refreshed = await getUserNotifications();
+                  setNotificationSettings(refreshed.notifications);
+                }} />
               </form>
             ) : null}
 
@@ -1041,6 +1215,15 @@ export default function App() {
   );
 }
 
+function NumberSetting({ label, field, value, setSettings }) {
+  return (
+    <label>
+      <span>{label}</span>
+      <input type="number" min="0" value={value ?? 0} onChange={(event) => setSettings((current) => ({ ...current, [field]: Number(event.target.value) }))} />
+    </label>
+  );
+}
+
 function tabMatches(item, tab) {
   if (tab === "action_needed") {
     return isReviewQueueItem(item);
@@ -1049,7 +1232,21 @@ function tabMatches(item, tab) {
     return isPriorityReviewItem(item);
   }
   if (tab === "high_quality") {
-    return isBestFind(item);
+    return item.alert_tier === "GEM";
+  }
+  if (tab === "profitable") {
+    return item.alert_tier === "PROFITABLE";
+  }
+  if (tab === "review") {
+    return item.alert_tier === "REVIEW";
+  }
+  if (tab === "unsent_actionable") {
+    return item.never_notified_actionable === true;
+  }
+  if (tab === "missed_opportunities") {
+    return item.alert_tier === "REVIEW" || item.alert_tier === "PROFITABLE" || (
+      Number(item.profit_mid || 0) > 0 && (item.alert_decision?.blocking_reasons || []).length <= 2
+    );
   }
   if (tab === "needs_data") {
     return isNeedsDataItem(item);
@@ -1189,7 +1386,7 @@ function hasReviewableDescriptionEvidence(item) {
     && (
       strongProofCount >= 2
       || (strongProofCount >= 1 && hasDescriptionEvidence)
-      || (hasDescriptionEvidence && Number(item.whole_phone_confidence_score || 0) >= 7)
+      || (hasDescriptionEvidence && Number(item.whole_phone_score || 0) >= 7)
     );
 }
 

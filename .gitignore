@@ -17,6 +17,9 @@ pytest-cache-files-*/
 .venv/
 frontend/node_modules/
 frontend/dist/
+logs/
+audit/cloud/
+audit/cloud-audit-state.json
 backend/data/injuredgadgets_html/
 *.bak
 *.backup

@@ -13,6 +13,7 @@ import {
   getAdminUsers,
   getAdminWorkerStatus,
   getTraceExport,
+  getPushDelivery,
   revokeAdminInvite,
   runTraceReplay,
   updateAdminUser,
@@ -69,6 +70,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
   const [workerStatus, setWorkerStatus] = useState(null);
   const [sourcesStatus, setSourcesStatus] = useState(null);
   const [freshScanExport, setFreshScanExport] = useState(null);
+  const [pushDelivery, setPushDelivery] = useState(null);
   const [adminAuthMessage, setAdminAuthMessage] = useState("");
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [selectedUsage, setSelectedUsage] = useState(null);
@@ -91,7 +93,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
     async function load() {
       setLoading(true);
       try {
-        const [usersResult, invitesResult, scanStatsResult, scanCyclesResult, workerStatusResult, sourcesStatusResult, freshScanExportResult] = await Promise.all([
+        const [usersResult, invitesResult, scanStatsResult, scanCyclesResult, workerStatusResult, sourcesStatusResult, freshScanExportResult, pushDeliveryResult] = await Promise.all([
           getAdminUsers(),
           getAdminInvites(),
           getAdminScanStats(),
@@ -99,6 +101,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
           getAdminWorkerStatus(),
           getAdminSourcesStatus(),
           getAdminFreshScanExport(),
+          getPushDelivery(),
         ]);
         if (cancelled) {
           return;
@@ -112,6 +115,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
         setWorkerStatus(workerStatusResult);
         setSourcesStatus(sourcesStatusResult);
         setFreshScanExport(freshScanExportResult);
+        setPushDelivery(pushDeliveryResult);
         if (nextUsers.length) {
           const nextSelectedUserId = nextUsers.some((entry) => entry.id === selectedUserId)
             ? selectedUserId
@@ -203,7 +207,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
   const replayPreviewRows = buildReplayPreviewRows(replayExport, replayResult);
 
   async function refreshUsers({ notice = "" } = {}) {
-    const [usersResult, invitesResult, scanStatsResult, scanCyclesResult, workerStatusResult, sourcesStatusResult, freshScanExportResult] = await Promise.all([
+    const [usersResult, invitesResult, scanStatsResult, scanCyclesResult, workerStatusResult, sourcesStatusResult, freshScanExportResult, pushDeliveryResult] = await Promise.all([
       getAdminUsers(),
       getAdminInvites(),
       getAdminScanStats(),
@@ -211,6 +215,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
       getAdminWorkerStatus(),
       getAdminSourcesStatus(),
       getAdminFreshScanExport(),
+      getPushDelivery(),
     ]);
     const nextUsers = usersResult.users || [];
     setUsers(nextUsers);
@@ -220,6 +225,7 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
     setWorkerStatus(workerStatusResult);
     setSourcesStatus(sourcesStatusResult);
     setFreshScanExport(freshScanExportResult);
+    setPushDelivery(pushDeliveryResult);
     setAdminAuthMessage("");
     if (notice) {
       onNotice(notice);
@@ -515,6 +521,9 @@ export default function AdminPanel({ onClose, onUnauthorized, onError, onNotice 
               <AdminMetric label="Shared API calls" value={scanStats.shared_api_calls ?? 0} />
               <AdminMetric label="Items ingested" value={scanStats.total_items_ingested ?? 0} />
               <AdminMetric label="Alerts sent" value={scanStats.alerts_sent ?? 0} />
+              <AdminMetric label="Push devices" value={pushDelivery?.metrics?.active_subscriptions ?? 0} />
+              <AdminMetric label="Push accepted" value={pushDelivery?.metrics?.accepted ?? 0} />
+              <AdminMetric label="Push failed/invalid" value={`${pushDelivery?.metrics?.failed ?? 0}/${pushDelivery?.metrics?.invalid ?? 0}`} />
             </div>
             <div className="live-summary" aria-label="Needs Data reason counts">
               <span>Needs Data reasons: <strong>{formatReasonCounts(latestCycle?.missing_data_reason_counts)}</strong></span>

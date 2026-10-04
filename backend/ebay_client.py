@@ -15,6 +15,7 @@ from .scorer import now_iso
 
 
 logger = logging.getLogger(__name__)
+EBAY_HTTP_TIMEOUT_SECONDS = 20
 
 
 class EbayRateLimitError(RuntimeError):
@@ -53,7 +54,7 @@ class EbayClient:
 
         normalized: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with self._http_client() as client:
             for keyword in keywords:
                 logger.info("Searching eBay keyword=%s limit=%s", keyword, limit)
                 response = await client.get(
@@ -102,7 +103,7 @@ class EbayClient:
             "grant_type": "client_credentials",
             "scope": "https://api.ebay.com/oauth/api_scope",
         }
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with self._http_client() as client:
             response = await client.post(self.settings.ebay_oauth_url, headers=headers, data=data)
             response.raise_for_status()
             payload = response.json()
@@ -148,11 +149,14 @@ class EbayClient:
             "Authorization": f"Bearer {access_token}",
             "X-EBAY-C-MARKETPLACE-ID": self.settings.ebay_marketplace_id,
         }
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with self._http_client() as client:
             details = await self._fetch_details(client, headers, item_id)
         if not details:
             return {}
         return normalize_item({"itemId": item_id}, details)
+
+    def _http_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=EBAY_HTTP_TIMEOUT_SECONDS, trust_env=False)
 
 
 def normalize_item(summary: dict[str, Any], details: Optional[dict[str, Any]] = None) -> dict[str, Any]:

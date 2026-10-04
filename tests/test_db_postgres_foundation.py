@@ -12,7 +12,7 @@ from backend import db_check
 from backend.config import Settings
 from backend.db import create_storage, redact_database_url, select_storage_class
 from backend.db_models import CORE_TABLES, metadata
-from backend.storage import PostgresStorage, Storage, _SQLAlchemyConnectionShim
+from backend.storage import PostgresStorage, Storage, _SQLAlchemyConnectionShim, _postgres_driver_connect_args
 from backend.tools import migrate_sqlite_to_postgres
 
 
@@ -40,6 +40,11 @@ def test_storage_selection_uses_postgres_when_configured():
         database_url="postgresql://user:secret@example.neon.tech/notifierr?sslmode=require",
     )
     assert select_storage_class(settings) is PostgresStorage
+
+
+def test_psycopg_auto_prepare_is_disabled_for_schema_safe_pooling():
+    assert _postgres_driver_connect_args("postgresql+psycopg://example/db") == {"prepare_threshold": None}
+    assert _postgres_driver_connect_args("postgresql+psycopg2://example/db") == {}
 
 
 def test_db_check_module_imports_without_connecting():

@@ -1,4 +1,10 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+import { dashboardItemsPath } from "./dashboardQuery.js";
+
+const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+if (import.meta.env.PROD && (!configuredApiBase || !configuredApiBase.startsWith("https://"))) {
+  throw new Error("Production build requires an HTTPS VITE_API_BASE_URL");
+}
+const API_BASE = configuredApiBase || "http://127.0.0.1:8000";
 const TOKEN_KEY = "notifierr_access_token";
 
 async function request(path, options = {}) {
@@ -243,13 +249,44 @@ export function testDiscordNotification() {
   });
 }
 
+export function getPushConfig() {
+  return request("/push/config", { cache: "reload" });
+}
+
+export function createPushSubscription(payload) {
+  return request("/push/subscriptions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deletePushSubscription(endpoint) {
+  return request("/push/subscriptions", {
+    method: "DELETE",
+    body: JSON.stringify({ endpoint }),
+  });
+}
+
+export function testPushNotification() {
+  return request("/push/test", { method: "POST" });
+}
+
+export function getPushDelivery() {
+  return request("/push/delivery");
+}
+
 export function getStats() {
   return request("/stats");
 }
 
-export function getItems({ status = "all", userStatus = "", includeIgnored = false, includeStale = false, limit = 500 } = {}) {
+export function getPollingStatus() {
+  return request("/admin/polling/status");
+}
+
+export function getItems({ status = "all", userStatus = "", includeIgnored = false, includeStale = false, limit = 50, offset = 0 } = {}) {
   const params = new URLSearchParams({
     limit: String(limit),
+    offset: String(offset),
     include_ignored: String(includeIgnored),
     include_stale: String(includeStale),
   });
@@ -260,6 +297,10 @@ export function getItems({ status = "all", userStatus = "", includeIgnored = fal
     params.set("user_status", userStatus);
   }
   return request(`/items?${params.toString()}`);
+}
+
+export function getDashboardItems({ queue, sort, search, includeIgnored, includeStale, limit, offset }) {
+  return request(dashboardItemsPath({ queue, sort, search, includeIgnored, includeStale, limit, offset }));
 }
 
 export function runScan() {
@@ -295,6 +336,24 @@ export function noteItem(itemId, note = "") {
 
 export function getItemCorrection(itemId) {
   return request(`/items/${encodeURIComponent(itemId)}/correction`);
+}
+
+export function updateItemFeedback(itemId, label, note) {
+  return request(`/items/${encodeURIComponent(itemId)}/feedback`, {
+    method: "PUT",
+    body: JSON.stringify(note === undefined ? { label } : { label, note }),
+  });
+}
+
+export function getItemOutcome(itemId) {
+  return request(`/items/${encodeURIComponent(itemId)}/outcome`);
+}
+
+export function updateItemOutcome(itemId, payload) {
+  return request(`/items/${encodeURIComponent(itemId)}/outcome`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
 }
 
 export function updateItemCorrection(itemId, payload) {

@@ -1339,3 +1339,122 @@ select {
     text-align: left;
   }
 }
+.autoscan-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 1rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border, #d8dee8);
+}
+
+.autoscan-running strong, .autoscan-scanning strong { color: #18794e; }
+.autoscan-degraded strong, .autoscan-stale strong, .autoscan-stopped strong,
+.autoscan-blocked strong, .autoscan-warning { color: #b42318; }
+.autoscan-disabled strong { color: #667085; }
+.notification-readiness {
+  font-weight: 700;
+}
+
+.notification-readiness-success { color: #137a4b; }
+.notification-readiness-danger { color: #b42318; }
+.notification-readiness-warning { color: #9a6700; }
+.notification-readiness-muted { color: #667085; }
+
+.scan-funnel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.8rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border, #d8dee8);
+  font-size: 0.86rem;
+}
+
+.scan-funnel .funnel-losses {
+  flex-basis: 100%;
+  color: #667085;
+}
+
+.quick-feedback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid var(--border, #d8dee8);
+}
+
+.quick-feedback button {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.quick-feedback button[aria-pressed="true"] {
+  border-color: var(--blue);
+  color: #bae6fd;
+}
+
+.outcome-editor {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+.outcome-editor h4 {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.outcome-editor label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.8rem;
+}
+
+.outcome-editor input,
+.outcome-editor select {
+  width: 100%;
+  min-width: 0;
+}
+.push-settings {
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.push-settings h4 {
+  margin: 0;
+}
+
+.push-state {
+  color: #94a3b8;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.push-state-on,
+.push-message-ok {
+  color: #4ade80;
+}
+
+.push-guidance {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.12);
+  color: #cbd5e1;
+  line-height: 1.45;
+}
+
+.push-message {
+  margin: 0.75rem 0 0;
+}
+
+.push-message-error {
+  color: #fca5a5;
+}

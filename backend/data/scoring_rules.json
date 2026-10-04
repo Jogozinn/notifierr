@@ -19,15 +19,7 @@
     "bent_frame": ["bent frame"],
     "major_frame_damage": ["major frame damage", "frame damaged", "badly damaged frame"],
     "no_power": ["no power"],
-    "does_not_turn_on": ["does not turn on", "doesn't turn on", "wont turn on", "won't turn on"],
-    "face_id_not_working": [
-      "face id not working",
-      "face id does not work",
-      "face id doesn't work",
-      "face id broken",
-      "face id failed",
-      "face id fails"
-    ]
+    "does_not_turn_on": ["does not turn on", "doesn't turn on", "wont turn on", "won't turn on"]
   },
   "positive_keywords": {
     "cracked_screen": ["cracked screen", "screen cracked"],

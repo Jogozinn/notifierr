@@ -237,7 +237,7 @@ def _install_scan_fakes(monkeypatch, listings, *, score_factory=None):
     return captured
 
 
-def test_resolved_settings_fallback_to_global_config(monkeypatch, tmp_path):
+def test_resolved_settings_does_not_fallback_to_global_without_opt_in(monkeypatch, tmp_path):
     storage, settings = _configure_app(
         monkeypatch,
         tmp_path,
@@ -276,8 +276,9 @@ def test_resolved_settings_fallback_to_global_config(monkeypatch, tmp_path):
     assert resolved.active_end == "22:00"
     assert resolved.timezone == "America/Chicago"
     assert resolved.keywords == ["fallback one", "fallback two"]
-    assert resolved.resolved_discord_webhook_url == "https://discord.example/global-hook"
-    assert resolved.discord_enabled_for_alerts is True
+    assert resolved.resolved_discord_webhook_url == ""
+    assert resolved.discord_enabled_for_alerts is False
+    assert resolved.notification_settings["notification_block_reason"] == "discord_disabled"
 
 
 def test_user_threshold_overrides_scoring_and_subsequent_scan_config(monkeypatch, tmp_path):
@@ -341,9 +342,14 @@ def test_user_threshold_overrides_scoring_and_subsequent_scan_config(monkeypatch
     assert captured["thresholds"][1][0] == 60.0
     assert first_scan.json()["best_finds"] == 0
     assert first_scan.json()["alerts_sent"] == 0
-    assert second_scan.json()["best_finds"] == 1
+    assert second_scan.json()["profitable"] == 1
     assert second_scan.json()["alerts_sent"] == 1
     assert captured["sent_urls"] == ["https://discord.example/user-hook"]
+    attempts = storage.list_notification_attempts(user_id=int(user["id"]))
+    assert len(attempts) == 1
+    assert attempts[0]["attempted"] is True
+    assert attempts[0]["sent"] is True
+    assert attempts[0]["failed"] is False
 
 
 def test_user_keyword_disable_removes_keyword_and_custom_keyword_is_included(monkeypatch, tmp_path):
@@ -419,6 +425,9 @@ def test_alerts_enabled_false_prevents_discord_notification(monkeypatch, tmp_pat
     assert response.status_code == 200
     assert response.json()["alerts_sent"] == 0
     assert captured["sent_urls"] == []
+    attempt = storage.list_notification_attempts(user_id=int(user["id"]))[0]
+    assert attempt["skipped"] is True
+    assert attempt["failure_category"] == "notifications_disabled"
 
 
 def test_discord_enabled_false_prevents_discord_notification(monkeypatch, tmp_path):
@@ -455,6 +464,9 @@ def test_discord_enabled_false_prevents_discord_notification(monkeypatch, tmp_pa
     assert response.status_code == 200
     assert response.json()["alerts_sent"] == 0
     assert captured["sent_urls"] == []
+    attempt = storage.list_notification_attempts(user_id=int(user["id"]))[0]
+    assert attempt["skipped"] is True
+    assert attempt["failure_category"] == "discord_disabled"
 
 
 def test_user_webhook_is_used_instead_of_global_webhook_when_configured(monkeypatch, tmp_path):
@@ -494,14 +506,19 @@ def test_user_webhook_is_used_instead_of_global_webhook_when_configured(monkeypa
     assert captured["sent_urls"] == ["https://discord.example/user-hook"]
 
 
-def test_auth_not_required_scan_can_use_global_webhook_fallback(monkeypatch, tmp_path):
-    _storage, _settings = _configure_app(
+def test_auth_not_required_scan_can_use_explicit_global_webhook_opt_in(monkeypatch, tmp_path):
+    storage, _settings = _configure_app(
         monkeypatch,
         tmp_path,
         auth_required=False,
         ebay_client_id="id",
         ebay_client_secret="secret",
         discord_webhook_url="https://discord.example/global-hook",
+    )
+    user = main._local_settings_user()
+    storage.update_user_notification_settings(
+        int(user["id"]),
+        {"discord_enabled": 1, "use_global_discord_webhook": 1},
     )
     captured = _install_scan_fakes(monkeypatch, [_listing("global-fallback")])
 
