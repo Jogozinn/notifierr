@@ -2360,3 +2360,67 @@ def _settings():
         min_profit_to_alert = 75
 
     return SettingsStub()
+
+
+def test_swappa_exit_cost_model_turns_expected_profit_into_net_profit():
+    resale_research = {
+        "__exit_cost_model__": {
+            "enabled": True,
+            "marketplace": "swappa",
+            "seller_fee_rate": 0.03,
+            "buyer_fee_rate": 0.03,
+            "payment_processing_rate": 0.0349,
+            "payment_processing_fixed": 0.49,
+            "payment_processing_base_includes_buyer_fee": True,
+            "outbound_shipping_tiers": [
+                {"max_sale_price": 300, "cost": 15},
+                {"max_sale_price": 600, "cost": 20},
+                {"max_sale_price": 1000, "cost": 26},
+                {"max_sale_price": None, "cost": 30},
+            ],
+            "note": "test exit-cost model",
+        },
+        "iPhone 14": {
+            "resale_by_storage": {
+                "128GB": {
+                    "good": {"low": 520, "mid": 610, "high": 690},
+                }
+            }
+        },
+    }
+    result = score_listing(
+        {
+            "title": "Apple iPhone 14 128GB Unlocked Cracked Screen",
+            "condition": "Used",
+            "total_cost": 260,
+        },
+        {
+            "iPhone 14": {
+                "risk_buffer": 50,
+                "parts": {"screen_safe": 100},
+            }
+        },
+        resale_research=resale_research,
+        scoring_rules=SCORING_RULES,
+        min_score_to_alert=70,
+        min_profit_to_alert=75,
+    )
+
+    assert result.profit_low == 55.22
+    assert result.profit_mid == 133.28
+    assert result.profit_high == 208.01
+    assert result.estimated_profit == 133.28
+    assert result.estimated_selling_fees == 40.72
+    assert result.estimated_outbound_shipping == 26
+    assert result.exit_cost_marketplace == "swappa"
+    assert result.exit_cost_note == "test exit-cost model"
+
+
+def test_bundled_resale_research_is_refreshed_and_enables_exit_costs():
+    research = load_resale_research(Path("backend/data/resale_research.json"))
+
+    assert research["__exit_cost_model__"]["enabled"] is True
+    assert research["__exit_cost_model__"]["marketplace"] == "swappa"
+    assert research["iPhone 14 Pro"]["resale_by_storage"]["512GB"]["good"]["mid"] == 435
+    assert research["iPhone 16 Pro Max"]["resale_by_storage"]["256GB"]["good"]["mid"] == 750
+    assert research["iPhone 17 Pro Max"]["resale_by_storage"]["1TB"]["good"]["mid"] == 1209

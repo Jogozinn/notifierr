@@ -7082,6 +7082,15 @@ def _build_decision_trace(
             "resale_high": item.get("resale_high"),
             "parts_cost": item.get("estimated_parts_cost"),
             "risk_buffer": item.get("risk_buffer"),
+            "estimated_selling_fees": round(float(getattr(result, "estimated_selling_fees", 0) or 0), 2),
+            "estimated_outbound_shipping": round(float(getattr(result, "estimated_outbound_shipping", 0) or 0), 2),
+            "exit_cost_marketplace": str(getattr(result, "exit_cost_marketplace", "") or ""),
+            "profit_basis": (
+                "net_after_estimated_exit_costs"
+                if float(getattr(result, "estimated_selling_fees", 0) or 0) > 0
+                or float(getattr(result, "estimated_outbound_shipping", 0) or 0) > 0
+                else "gross_before_exit_costs"
+            ),
             "profit_low": item.get("profit_low"),
             "profit_mid": item.get("profit_mid") or item.get("estimated_profit"),
             "profit_high": item.get("profit_high"),

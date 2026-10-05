@@ -275,6 +275,10 @@ class ScoreResult:
     mint_profit_low: float = 0.0
     mint_profit_mid: float = 0.0
     mint_profit_high: float = 0.0
+    estimated_selling_fees: float = 0.0
+    estimated_outbound_shipping: float = 0.0
+    exit_cost_marketplace: str = ""
+    exit_cost_note: str = ""
     storage_capacity: str | None = None
     storage_confidence: str = ""
     storage_source: str = ""
@@ -450,12 +454,14 @@ def score_listing(
         and classification["has_repair_issue"]
         and classification["has_specific_repair_issue"]
     )
+    exit_cost_model = _exit_cost_model(resale_research)
     profit_low, profit_mid, profit_high = _profit_range(
         resale,
         total_cost=total_cost,
         estimated_parts_cost=estimated_parts_cost,
         risk_buffer=risk_buffer,
         available=estimated_profit_available,
+        exit_cost_model=exit_cost_model,
     )
     mint_profit_low, mint_profit_mid, mint_profit_high = _profit_range(
         resale["mint"],
@@ -463,7 +469,9 @@ def score_listing(
         estimated_parts_cost=estimated_parts_cost,
         risk_buffer=risk_buffer,
         available=estimated_profit_available and float(resale["mint"].get("mid") or 0) > 0,
+        exit_cost_model=exit_cost_model,
     )
+    mid_exit_costs = _estimated_exit_costs(float(resale.get("mid") or 0), exit_cost_model)
     estimated_profit = profit_mid
     parts_pricing_status = str(estimate.get("parts_pricing_status") or "fallback")
     parts_pricing_note = str(estimate.get("parts_pricing_note") or "")
@@ -616,6 +624,10 @@ def score_listing(
         mint_profit_low=round(mint_profit_low, 2),
         mint_profit_mid=round(mint_profit_mid, 2),
         mint_profit_high=round(mint_profit_high, 2),
+        estimated_selling_fees=round(mid_exit_costs["selling_fees"], 2),
+        estimated_outbound_shipping=round(mid_exit_costs["outbound_shipping"], 2),
+        exit_cost_marketplace=str(exit_cost_model.get("marketplace") or "") if exit_cost_model else "",
+        exit_cost_note=str(exit_cost_model.get("note") or "") if exit_cost_model else "",
         storage_capacity=storage["storage_capacity"],
         storage_confidence=storage["storage_confidence"],
         storage_source=storage["storage_source"],
@@ -1634,15 +1646,71 @@ def _profit_range(
     estimated_parts_cost: float,
     risk_buffer: float,
     available: bool,
+    exit_cost_model: dict[str, Any] | None = None,
 ) -> tuple[float, float, float]:
     if not available:
         return 0.0, 0.0, 0.0
     cost_basis = total_cost + estimated_parts_cost + risk_buffer
+
+    def net_profit(sale_price: float) -> float:
+        exit_costs = _estimated_exit_costs(sale_price, exit_cost_model)
+        return sale_price - cost_basis - exit_costs["total"]
+
     return (
-        float(resale["low"]) - cost_basis,
-        float(resale["mid"]) - cost_basis,
-        float(resale["high"]) - cost_basis,
+        net_profit(float(resale["low"])),
+        net_profit(float(resale["mid"])),
+        net_profit(float(resale["high"])),
     )
+
+
+def _exit_cost_model(resale_research: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(resale_research, dict):
+        return {}
+    model = resale_research.get("__exit_cost_model__")
+    if not isinstance(model, dict) or not bool(model.get("enabled")):
+        return {}
+    return model
+
+
+def _estimated_exit_costs(sale_price: float, model: dict[str, Any] | None) -> dict[str, float]:
+    if sale_price <= 0 or not model:
+        return {"selling_fees": 0.0, "outbound_shipping": 0.0, "total": 0.0}
+
+    seller_fee_rate = max(0.0, float(model.get("seller_fee_rate") or 0.0))
+    buyer_fee_rate = max(0.0, float(model.get("buyer_fee_rate") or 0.0))
+    processing_rate = max(0.0, float(model.get("payment_processing_rate") or 0.0))
+    processing_fixed = max(0.0, float(model.get("payment_processing_fixed") or 0.0))
+    processing_base = sale_price
+    if bool(model.get("payment_processing_base_includes_buyer_fee")):
+        processing_base *= 1.0 + buyer_fee_rate
+
+    selling_fees = (sale_price * seller_fee_rate) + (processing_base * processing_rate) + processing_fixed
+    outbound_shipping = _tiered_outbound_shipping(sale_price, model.get("outbound_shipping_tiers"))
+    return {
+        "selling_fees": selling_fees,
+        "outbound_shipping": outbound_shipping,
+        "total": selling_fees + outbound_shipping,
+    }
+
+
+def _tiered_outbound_shipping(sale_price: float, tiers: Any) -> float:
+    if not isinstance(tiers, list):
+        return 0.0
+    fallback = 0.0
+    for tier in tiers:
+        if not isinstance(tier, dict):
+            continue
+        cost = max(0.0, float(tier.get("cost") or 0.0))
+        max_sale_price = tier.get("max_sale_price")
+        if max_sale_price is None:
+            fallback = cost
+            continue
+        try:
+            if sale_price <= float(max_sale_price):
+                return cost
+        except (TypeError, ValueError):
+            continue
+    return fallback
 
 
 def _float_or_none(value: Any) -> float | None:

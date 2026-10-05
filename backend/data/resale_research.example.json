@@ -1,4 +1,35 @@
 {
+  "__exit_cost_model__": {
+    "enabled": true,
+    "marketplace": "swappa",
+    "basis": "expected_net_profit",
+    "seller_fee_rate": 0.03,
+    "buyer_fee_rate": 0.03,
+    "payment_processor": "paypal",
+    "payment_processing_rate": 0.0349,
+    "payment_processing_fixed": 0.49,
+    "payment_processing_base_includes_buyer_fee": true,
+    "outbound_shipping_tiers": [
+      {
+        "max_sale_price": 300,
+        "cost": 15
+      },
+      {
+        "max_sale_price": 600,
+        "cost": 20
+      },
+      {
+        "max_sale_price": 1000,
+        "cost": 26
+      },
+      {
+        "max_sale_price": null,
+        "cost": 30
+      }
+    ],
+    "updated_at": "2026-10-04",
+    "note": "Expected profit subtracts Swappa's 3% seller fee, conservative PayPal processing (3.49% + $0.49, applied to ask price plus Swappa buyer fee), and tiered outbound shipping/insurance allowance. Shipping tiers approximate tracked, fully insured domestic phone shipment; model risk_buffer remains separate."
+  },
   "iPhone 13 Pro": {
     "resale_by_storage": {
       "128GB": {

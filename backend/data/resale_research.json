@@ -1,862 +1,893 @@
 {
-"iPhone 13": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 214,
-"mid": 282,
-"high": 294
-},
-"mint": {
-"low": 282,
-"mid": 309,
-"high": 339
-},
-"confidence": "low",
-"sample_size": 213,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 273,
-"mid": 309,
-"high": 384
-},
-"mint": {
-"low": 309,
-"mid": 404,
-"high": 442
-},
-"confidence": "low",
-"sample_size": 39,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 338,
-"mid": 437,
-"high": 437
-},
-"mint": {
-"low": 437,
-"mid": 459,
-"high": 503
-},
-"confidence": "low",
-"sample_size": 8,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 13 Pro": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 268,
-"mid": 389,
-"high": 396
-},
-"mint": {
-"low": 389,
-"mid": 416,
-"high": 456
-},
-"confidence": "low",
-"sample_size": 51,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 402,
-"mid": 402,
-"high": 469
-},
-"mint": {
-"low": 402,
-"mid": 493,
-"high": 540
-},
-"confidence": "low",
-"sample_size": 32,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 444,
-"mid": 444,
-"high": 594
-},
-"mint": {
-"low": 444,
-"mid": 624,
-"high": 684
-},
-"confidence": "low",
-"sample_size": 14,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 567,
-"mid": 589,
-"high": 745
-},
-"mint": {
-"low": 589,
-"mid": 783,
-"high": 857
-},
-"confidence": "low",
-"sample_size": 4,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 13 Pro Max": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 388,
-"mid": 453,
-"high": 454
-},
-"mint": {
-"low": 453,
-"mid": 477,
-"high": 523
-},
-"confidence": "low",
-"sample_size": 52,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 490,
-"mid": 490,
-"high": 530
-},
-"mint": {
-"low": 490,
-"mid": 557,
-"high": 610
-},
-"confidence": "low",
-"sample_size": 29,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 534,
-"mid": 534,
-"high": 607
-},
-"mint": {
-"low": 534,
-"mid": 638,
-"high": 699
-},
-"confidence": "low",
-"sample_size": 20,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 560,
-"mid": 560,
-"high": 595
-},
-"mint": {
-"low": 560,
-"mid": 625,
-"high": 685
-},
-"confidence": "low",
-"sample_size": 8,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 14": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 278,
-"mid": 348,
-"high": 360
-},
-"mint": {
-"low": 348,
-"mid": 378,
-"high": 414
-},
-"confidence": "low",
-"sample_size": 91,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 339,
-"mid": 363,
-"high": 363
-},
-"mint": {
-"low": 363,
-"mid": 382,
-"high": 418
-},
-"confidence": "low",
-"sample_size": 19,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 390,
-"mid": 390,
-"high": 468
-},
-"mint": {
-"low": 390,
-"mid": 492,
-"high": 539
-},
-"confidence": "low",
-"sample_size": 15,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 14 Pro": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 370,
-"mid": 433,
-"high": 607
-},
-"mint": {
-"low": 433,
-"mid": 638,
-"high": 699
-},
-"confidence": "low",
-"sample_size": 49,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 470,
-"mid": 470,
-"high": 586
-},
-"mint": {
-"low": 470,
-"mid": 616,
-"high": 674
-},
-"confidence": "low",
-"sample_size": 30,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 559,
-"mid": 727,
-"high": 727
-},
-"mint": {
-"low": 727,
-"mid": 764,
-"high": 837
-},
-"confidence": "low",
-"sample_size": 11,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 563,
-"mid": 563,
-"high": 658
-},
-"mint": {
-"low": 563,
-"mid": 695,
-"high": 756
-},
-"confidence": "low",
-"sample_size": 11,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 14 Pro Max": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 417,
-"mid": 509,
-"high": 533
-},
-"mint": {
-"low": 509,
-"mid": 559,
-"high": 612
-},
-"confidence": "low",
-"sample_size": 64,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 556,
-"mid": 556,
-"high": 635
-},
-"mint": {
-"low": 556,
-"mid": 667,
-"high": 730
-},
-"confidence": "low",
-"sample_size": 43,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 461,
-"mid": 593,
-"high": 752
-},
-"mint": {
-"low": 593,
-"mid": 789,
-"high": 865
-},
-"confidence": "low",
-"sample_size": 23,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 637,
-"mid": 638,
-"high": 706
-},
-"mint": {
-"low": 638,
-"mid": 741,
-"high": 812
-},
-"confidence": "low",
-"sample_size": 8,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 15": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 424,
-"mid": 443,
-"high": 597
-},
-"mint": {
-"low": 443,
-"mid": 627,
-"high": 687
-},
-"confidence": "low",
-"sample_size": 88,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 447,
-"mid": 447,
-"high": 447
-},
-"mint": {
-"low": 447,
-"mid": 469,
-"high": 514
-},
-"confidence": "low",
-"sample_size": 5,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 457,
-"mid": 544,
-"high": 544
-},
-"mint": {
-"low": 544,
-"mid": 571,
-"high": 626
-},
-"confidence": "low",
-"sample_size": 8,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 15 Pro": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 514,
-"mid": 561,
-"high": 561
-},
-"mint": {
-"low": 561,
-"mid": 589,
-"high": 646
-},
-"confidence": "low",
-"sample_size": 35,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 456,
-"mid": 573,
-"high": 573
-},
-"mint": {
-"low": 573,
-"mid": 602,
-"high": 659
-},
-"confidence": "low",
-"sample_size": 15,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 534,
-"mid": 636,
-"high": 636
-},
-"mint": {
-"low": 636,
-"mid": 668,
-"high": 731
-},
-"confidence": "low",
-"sample_size": 8,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 653,
-"mid": 820,
-"high": 820
-},
-"mint": {
-"low": 820,
-"mid": 861,
-"high": 943
-},
-"confidence": "low",
-"sample_size": 5,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 15 Pro Max": {
-"resale_by_storage": {
-"256GB": {
-"good": {
-"low": 515,
-"mid": 645,
-"high": 688
-},
-"mint": {
-"low": 645,
-"mid": 722,
-"high": 791
-},
-"confidence": "low",
-"sample_size": 56,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 711,
-"mid": 711,
-"high": 746
-},
-"mint": {
-"low": 711,
-"mid": 783,
-"high": 857
-},
-"confidence": "low",
-"sample_size": 12,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 665,
-"mid": 709,
-"high": 749
-},
-"mint": {
-"low": 709,
-"mid": 861,
-"high": 861
-},
-"confidence": "low",
-"sample_size": 7,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 16": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 464,
-"mid": 619,
-"high": 649
-},
-"mint": {
-"low": 619,
-"mid": 681,
-"high": 746
-},
-"confidence": "low",
-"sample_size": 55,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 515,
-"mid": 663,
-"high": 718
-},
-"mint": {
-"low": 663,
-"mid": 754,
-"high": 826
-},
-"confidence": "low",
-"sample_size": 25,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 760,
-"mid": 760,
-"high": 760
-},
-"mint": {
-"low": 760,
-"mid": 798,
-"high": 874
-},
-"confidence": "low",
-"sample_size": 12,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 16 Pro": {
-"resale_by_storage": {
-"128GB": {
-"good": {
-"low": 634,
-"mid": 730,
-"high": 730
-},
-"mint": {
-"low": 730,
-"mid": 767,
-"high": 840
-},
-"confidence": "low",
-"sample_size": 38,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"256GB": {
-"good": {
-"low": 633,
-"mid": 772,
-"high": 772
-},
-"mint": {
-"low": 772,
-"mid": 811,
-"high": 888
-},
-"confidence": "low",
-"sample_size": 28,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 861,
-"mid": 861,
-"high": 875
-},
-"mint": {
-"low": 861,
-"mid": 919,
-"high": 1007
-},
-"confidence": "low",
-"sample_size": 17,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 895,
-"mid": 895,
-"high": 895
-},
-"mint": {
-"low": 895,
-"mid": 940,
-"high": 1030
-},
-"confidence": "low",
-"sample_size": 4,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 16 Pro Max": {
-"resale_by_storage": {
-"256GB": {
-"good": {
-"low": 669,
-"mid": 859,
-"high": 983
-},
-"mint": {
-"low": 859,
-"mid": 1033,
-"high": 1131
-},
-"confidence": "low",
-"sample_size": 39,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 686,
-"mid": 868,
-"high": 929
-},
-"mint": {
-"low": 868,
-"mid": 976,
-"high": 1069
-},
-"confidence": "low",
-"sample_size": 15,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 749,
-"mid": 977,
-"high": 1028
-},
-"mint": {
-"low": 977,
-"mid": 1080,
-"high": 1183
-},
-"confidence": "low",
-"sample_size": 15,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 17": {
-"resale_by_storage": {
-"256GB": {
-"good": {
-"low": 686,
-"mid": 743,
-"high": 793
-},
-"mint": {
-"low": 743,
-"mid": 833,
-"high": 912
-},
-"confidence": "low",
-"sample_size": 50,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 989,
-"mid": 989,
-"high": 1030
-},
-"mint": {
-"low": 989,
-"mid": 1082,
-"high": 1185
-},
-"confidence": "low",
-"sample_size": 14,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 17 Pro": {
-"resale_by_storage": {
-"256GB": {
-"good": {
-"low": 906,
-"mid": 1064,
-"high": 1111
-},
-"mint": {
-"low": 1064,
-"mid": 1167,
-"high": 1278
-},
-"confidence": "low",
-"sample_size": 18,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 1191,
-"mid": 1300,
-"high": 1300
-},
-"mint": {
-"low": 1300,
-"mid": 1365,
-"high": 1495
-},
-"confidence": "low",
-"sample_size": 13,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 1393,
-"mid": 1448,
-"high": 1488
-},
-"mint": {
-"low": 1448,
-"mid": 1563,
-"high": 1712
-},
-"confidence": "low",
-"sample_size": 7,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-},
-"iPhone 17 Pro Max": {
-"resale_by_storage": {
-"256GB": {
-"good": {
-"low": 1002,
-"mid": 1226,
-"high": 1226
-},
-"mint": {
-"low": 1226,
-"mid": 1288,
-"high": 1410
-},
-"confidence": "low",
-"sample_size": 10,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"512GB": {
-"good": {
-"low": 1290,
-"mid": 1455,
-"high": 1498
-},
-"mint": {
-"low": 1455,
-"mid": 1573,
-"high": 1723
-},
-"confidence": "low",
-"sample_size": 4,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-},
-"1TB": {
-"good": {
-"low": 1598,
-"mid": 1598,
-"high": 1598
-},
-"mint": {
-"low": 1598,
-"mid": 1678,
-"high": 1838
-},
-"confidence": "low",
-"sample_size": 2,
-"updated_at": "2026-05-25",
-"note": "Values derived from Swappa sold price data for this model/storage. Condition-specific sold comps (Good vs Mint) were limited; mint values add 5-15% to good prices. Excluded cracked, parts-only, locked, bad ESN, financed, and repair listings."
-}
-}
-}
+  "__exit_cost_model__": {
+    "enabled": true,
+    "marketplace": "swappa",
+    "basis": "expected_net_profit",
+    "seller_fee_rate": 0.03,
+    "buyer_fee_rate": 0.03,
+    "payment_processor": "paypal",
+    "payment_processing_rate": 0.0349,
+    "payment_processing_fixed": 0.49,
+    "payment_processing_base_includes_buyer_fee": true,
+    "outbound_shipping_tiers": [
+      {
+        "max_sale_price": 300,
+        "cost": 15
+      },
+      {
+        "max_sale_price": 600,
+        "cost": 20
+      },
+      {
+        "max_sale_price": 1000,
+        "cost": 26
+      },
+      {
+        "max_sale_price": null,
+        "cost": 30
+      }
+    ],
+    "updated_at": "2026-10-04",
+    "note": "Expected profit subtracts Swappa's 3% seller fee, conservative PayPal processing (3.49% + $0.49, applied to ask price plus Swappa buyer fee), and tiered outbound shipping/insurance allowance. Shipping tiers approximate tracked, fully insured domestic phone shipment; model risk_buffer remains separate."
+  },
+  "iPhone 13": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 220,
+          "mid": 245,
+          "high": 270
+        },
+        "mint": {
+          "low": 245,
+          "mid": 257,
+          "high": 270
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $245; avg list $282. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13"
+      },
+      "256GB": {
+        "good": {
+          "low": 231,
+          "mid": 257,
+          "high": 283
+        },
+        "mint": {
+          "low": 257,
+          "mid": 270,
+          "high": 283
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $257; avg list $347. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13"
+      },
+      "512GB": {
+        "good": {
+          "low": 312,
+          "mid": 347,
+          "high": 378
+        },
+        "mint": {
+          "low": 347,
+          "mid": 364,
+          "high": 378
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $347; avg list $378. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13"
+      }
+    }
+  },
+  "iPhone 13 Pro": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 266,
+          "mid": 296,
+          "high": 326
+        },
+        "mint": {
+          "low": 296,
+          "mid": 311,
+          "high": 326
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $296; avg list $394. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro"
+      },
+      "256GB": {
+        "good": {
+          "low": 297,
+          "mid": 330,
+          "high": 363
+        },
+        "mint": {
+          "low": 330,
+          "mid": 346,
+          "high": 363
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $330; avg list $456. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro"
+      },
+      "512GB": {
+        "good": {
+          "low": 415,
+          "mid": 461,
+          "high": 461
+        },
+        "mint": {
+          "low": 461,
+          "mid": 461,
+          "high": 461
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $461; avg list $424. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro"
+      },
+      "1TB": {
+        "good": {
+          "low": 390,
+          "mid": 433,
+          "high": 476
+        },
+        "mint": {
+          "low": 433,
+          "mid": 455,
+          "high": 476
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $433; avg list $664. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro"
+      }
+    }
+  },
+  "iPhone 13 Pro Max": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 328,
+          "mid": 364,
+          "high": 400
+        },
+        "mint": {
+          "low": 364,
+          "mid": 382,
+          "high": 400
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $364; avg list $453. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro-max"
+      },
+      "256GB": {
+        "good": {
+          "low": 345,
+          "mid": 383,
+          "high": 421
+        },
+        "mint": {
+          "low": 383,
+          "mid": 402,
+          "high": 421
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $383; avg list $480. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro-max"
+      },
+      "512GB": {
+        "good": {
+          "low": 383,
+          "mid": 426,
+          "high": 469
+        },
+        "mint": {
+          "low": 426,
+          "mid": 447,
+          "high": 469
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $426; avg list $522. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro-max"
+      },
+      "1TB": {
+        "good": {
+          "low": 447,
+          "mid": 497,
+          "high": 537
+        },
+        "mint": {
+          "low": 497,
+          "mid": 522,
+          "high": 537
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $497; avg list $537. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-13-pro-max"
+      }
+    }
+  },
+  "iPhone 14": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 256,
+          "mid": 284,
+          "high": 312
+        },
+        "mint": {
+          "low": 284,
+          "mid": 298,
+          "high": 312
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $284; avg list $337. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14"
+      },
+      "256GB": {
+        "good": {
+          "low": 286,
+          "mid": 318,
+          "high": 345
+        },
+        "mint": {
+          "low": 318,
+          "mid": 334,
+          "high": 345
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $318; avg list $345. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14"
+      },
+      "512GB": {
+        "good": {
+          "low": 339,
+          "mid": 377,
+          "high": 404
+        },
+        "mint": {
+          "low": 377,
+          "mid": 396,
+          "high": 404
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $377; avg list $404. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14"
+      }
+    }
+  },
+  "iPhone 14 Pro": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 325,
+          "mid": 361,
+          "high": 397
+        },
+        "mint": {
+          "low": 361,
+          "mid": 379,
+          "high": 397
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $361; avg list $469. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro"
+      },
+      "256GB": {
+        "good": {
+          "low": 356,
+          "mid": 396,
+          "high": 436
+        },
+        "mint": {
+          "low": 396,
+          "mid": 416,
+          "high": 436
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $396; avg list $495. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro"
+      },
+      "512GB": {
+        "good": {
+          "low": 392,
+          "mid": 435,
+          "high": 479
+        },
+        "mint": {
+          "low": 435,
+          "mid": 457,
+          "high": 479
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $435; avg list $676. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro"
+      },
+      "1TB": {
+        "good": {
+          "low": 431,
+          "mid": 479,
+          "high": 527
+        },
+        "mint": {
+          "low": 479,
+          "mid": 503,
+          "high": 527
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $479; avg list $660. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro"
+      }
+    }
+  },
+  "iPhone 14 Pro Max": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 401,
+          "mid": 446,
+          "high": 491
+        },
+        "mint": {
+          "low": 446,
+          "mid": 468,
+          "high": 491
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $446; avg list $531. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro-max"
+      },
+      "256GB": {
+        "good": {
+          "low": 425,
+          "mid": 472,
+          "high": 519
+        },
+        "mint": {
+          "low": 472,
+          "mid": 496,
+          "high": 519
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $472; avg list $580. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro-max"
+      },
+      "512GB": {
+        "good": {
+          "low": 466,
+          "mid": 518,
+          "high": 570
+        },
+        "mint": {
+          "low": 518,
+          "mid": 544,
+          "high": 570
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $518; avg list $618. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro-max"
+      },
+      "1TB": {
+        "good": {
+          "low": 483,
+          "mid": 537,
+          "high": 591
+        },
+        "mint": {
+          "low": 537,
+          "mid": 564,
+          "high": 591
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $537; avg list $746. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-14-pro-max"
+      }
+    }
+  },
+  "iPhone 15": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 346,
+          "mid": 385,
+          "high": 424
+        },
+        "mint": {
+          "low": 385,
+          "mid": 404,
+          "high": 424
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $385; avg list $438. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15"
+      },
+      "256GB": {
+        "good": {
+          "low": 423,
+          "mid": 470,
+          "high": 509
+        },
+        "mint": {
+          "low": 470,
+          "mid": 494,
+          "high": 509
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $470; avg list $509. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15"
+      },
+      "512GB": {
+        "good": {
+          "low": 454,
+          "mid": 505,
+          "high": 505
+        },
+        "mint": {
+          "low": 505,
+          "mid": 505,
+          "high": 505
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $505; avg list $474. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15"
+      }
+    }
+  },
+  "iPhone 15 Pro": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 442,
+          "mid": 491,
+          "high": 540
+        },
+        "mint": {
+          "low": 491,
+          "mid": 516,
+          "high": 540
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $491; avg list $562. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro"
+      },
+      "256GB": {
+        "good": {
+          "low": 478,
+          "mid": 531,
+          "high": 584
+        },
+        "mint": {
+          "low": 531,
+          "mid": 558,
+          "high": 584
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $531; avg list $588. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro"
+      },
+      "512GB": {
+        "good": {
+          "low": 506,
+          "mid": 562,
+          "high": 618
+        },
+        "mint": {
+          "low": 562,
+          "mid": 590,
+          "high": 618
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $562; avg list $666. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro"
+      },
+      "1TB": {
+        "good": {
+          "low": 520,
+          "mid": 578,
+          "high": 636
+        },
+        "mint": {
+          "low": 578,
+          "mid": 607,
+          "high": 636
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $578; avg list $665. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro"
+      }
+    }
+  },
+  "iPhone 15 Pro Max": {
+    "resale_by_storage": {
+      "256GB": {
+        "good": {
+          "low": 524,
+          "mid": 582,
+          "high": 640
+        },
+        "mint": {
+          "low": 582,
+          "mid": 611,
+          "high": 640
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $582; avg list $654. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro-max"
+      },
+      "512GB": {
+        "good": {
+          "low": 563,
+          "mid": 626,
+          "high": 689
+        },
+        "mint": {
+          "low": 626,
+          "mid": 657,
+          "high": 689
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $626; avg list $722. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro-max"
+      },
+      "1TB": {
+        "good": {
+          "low": 636,
+          "mid": 707,
+          "high": 778
+        },
+        "mint": {
+          "low": 707,
+          "mid": 742,
+          "high": 778
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $707; avg list $781. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-15-pro-max"
+      }
+    }
+  },
+  "iPhone 16": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 477,
+          "mid": 530,
+          "high": 583
+        },
+        "mint": {
+          "low": 530,
+          "mid": 556,
+          "high": 583
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $530; avg list $590. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16"
+      },
+      "256GB": {
+        "good": {
+          "low": 539,
+          "mid": 599,
+          "high": 659
+        },
+        "mint": {
+          "low": 599,
+          "mid": 629,
+          "high": 659
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $599; avg list $666. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16"
+      },
+      "512GB": {
+        "good": {
+          "low": 616,
+          "mid": 685,
+          "high": 744
+        },
+        "mint": {
+          "low": 685,
+          "mid": 719,
+          "high": 744
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $685; avg list $744. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16"
+      }
+    }
+  },
+  "iPhone 16 Pro": {
+    "resale_by_storage": {
+      "128GB": {
+        "good": {
+          "low": 587,
+          "mid": 652,
+          "high": 706
+        },
+        "mint": {
+          "low": 652,
+          "mid": 685,
+          "high": 706
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $652; avg list $706. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro"
+      },
+      "256GB": {
+        "good": {
+          "low": 631,
+          "mid": 701,
+          "high": 771
+        },
+        "mint": {
+          "low": 701,
+          "mid": 736,
+          "high": 771
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $701; avg list $783. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro"
+      },
+      "512GB": {
+        "good": {
+          "low": 688,
+          "mid": 765,
+          "high": 829
+        },
+        "mint": {
+          "low": 765,
+          "mid": 803,
+          "high": 829
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $765; avg list $829. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro"
+      },
+      "1TB": {
+        "good": {
+          "low": 774,
+          "mid": 860,
+          "high": 914
+        },
+        "mint": {
+          "low": 860,
+          "mid": 903,
+          "high": 914
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $860; avg list $914. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro"
+      }
+    }
+  },
+  "iPhone 16 Pro Max": {
+    "resale_by_storage": {
+      "256GB": {
+        "good": {
+          "low": 675,
+          "mid": 750,
+          "high": 825
+        },
+        "mint": {
+          "low": 750,
+          "mid": 788,
+          "high": 825
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $750; avg list $827. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro-max"
+      },
+      "512GB": {
+        "good": {
+          "low": 720,
+          "mid": 800,
+          "high": 880
+        },
+        "mint": {
+          "low": 800,
+          "mid": 840,
+          "high": 880
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $800; avg list $915. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro-max"
+      },
+      "1TB": {
+        "good": {
+          "low": 796,
+          "mid": 884,
+          "high": 972
+        },
+        "mint": {
+          "low": 884,
+          "mid": 928,
+          "high": 972
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $884; avg list $987. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-16-pro-max"
+      }
+    }
+  },
+  "iPhone 17": {
+    "resale_by_storage": {
+      "256GB": {
+        "good": {
+          "low": 656,
+          "mid": 729,
+          "high": 787
+        },
+        "mint": {
+          "low": 729,
+          "mid": 765,
+          "high": 787
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $729; avg list $787. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17"
+      },
+      "512GB": {
+        "good": {
+          "low": 798,
+          "mid": 887,
+          "high": 888
+        },
+        "mint": {
+          "low": 887,
+          "mid": 888,
+          "high": 888
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $887; avg list $888. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17"
+      }
+    }
+  },
+  "iPhone 17 Pro": {
+    "resale_by_storage": {
+      "256GB": {
+        "good": {
+          "low": 820,
+          "mid": 911,
+          "high": 1002
+        },
+        "mint": {
+          "low": 911,
+          "mid": 957,
+          "high": 1002
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $911; avg list $1018. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17-pro"
+      },
+      "512GB": {
+        "good": {
+          "low": 934,
+          "mid": 1038,
+          "high": 1137
+        },
+        "mint": {
+          "low": 1038,
+          "mid": 1090,
+          "high": 1137
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $1038; avg list $1137. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17-pro"
+      },
+      "1TB": {
+        "good": {
+          "low": 953,
+          "mid": 1059,
+          "high": 1165
+        },
+        "mint": {
+          "low": 1059,
+          "mid": 1112,
+          "high": 1165
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $1059; avg list $1400. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17-pro"
+      }
+    }
+  },
+  "iPhone 17 Pro Max": {
+    "resale_by_storage": {
+      "256GB": {
+        "good": {
+          "low": 915,
+          "mid": 1017,
+          "high": 1100
+        },
+        "mint": {
+          "low": 1017,
+          "mid": 1068,
+          "high": 1100
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $1017; avg list $1100. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17-pro-max"
+      },
+      "512GB": {
+        "good": {
+          "low": 1010,
+          "mid": 1122,
+          "high": 1221
+        },
+        "mint": {
+          "low": 1122,
+          "mid": 1178,
+          "high": 1221
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $1122; avg list $1221. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17-pro-max"
+      },
+      "1TB": {
+        "good": {
+          "low": 1088,
+          "mid": 1209,
+          "high": 1330
+        },
+        "mint": {
+          "low": 1209,
+          "mid": 1269,
+          "high": 1330
+        },
+        "confidence": "medium",
+        "sample_size": 0,
+        "updated_at": "2026-10-04",
+        "note": "Refreshed from Swappa storage price guide updated 2026-10-04. Avg sale $1209; avg list $1465. Expected resale mid uses the observed avg sale price. Low is a conservative 90% of avg sale; high is capped at the lower of avg list or 110% of avg sale. Mint range is intentionally conservative and does not assume a large cosmetic premium. Source: https://swappa.com/prices/apple-iphone-17-pro-max"
+      }
+    }
+  }
 }
