@@ -410,6 +410,25 @@ CREATE TABLE IF NOT EXISTS user_item_states (
     FOREIGN KEY(marketplace_item_id) REFERENCES marketplace_items(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS research_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    marketplace_item_id INTEGER NOT NULL,
+    item_id TEXT NOT NULL,
+    evidence_day TEXT NOT NULL,
+    interesting INTEGER NOT NULL DEFAULT 0,
+    evidence_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, item_id),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_evidence_day
+    ON research_evidence(evidence_day, id);
+CREATE INDEX IF NOT EXISTS idx_research_evidence_user_day
+    ON research_evidence(user_id, evidence_day, id);
+
 CREATE TABLE IF NOT EXISTS shared_scan_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     mode TEXT NOT NULL DEFAULT 'shared',
@@ -2963,6 +2982,29 @@ class Storage:
             raise KeyError(item_id)
         return row
 
+    def user_item_state_exists(self, user_id: int, item_id: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM marketplace_items mi JOIN user_item_states uis ON uis.marketplace_item_id=mi.id
+                   WHERE uis.user_id=? AND mi.marketplace_item_id=? LIMIT 1""",
+                (int(user_id), str(item_id)),
+            ).fetchone()
+        return bool(row)
+
+    def user_item_state_identity(self, user_id: int, item_id: str) -> dict[str, str] | None:
+        """Return only decision fingerprints for a cheap duplicate-rescore check."""
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT uis.scorer_hash, uis.rules_hash, uis.repair_hash, uis.resale_hash
+                   FROM marketplace_items mi JOIN user_item_states uis ON uis.marketplace_item_id=mi.id
+                   WHERE uis.user_id=? AND mi.marketplace_item_id=? LIMIT 1""",
+                (int(user_id), str(item_id)),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        return {key: str(data.get(key) or "") for key in ("scorer_hash", "rules_hash", "repair_hash", "resale_hash")}
+
     def get_user_item_feedback(self, user_id: int, item_id: str) -> dict[str, Any] | None:
         with self.connect() as connection:
             row = connection.execute(
@@ -3121,6 +3163,7 @@ class Storage:
                     mi.first_seen_at AS first_seen_at,
                     mi.found_at AS found_at,
                     uis.updated_at AS updated_at,
+                    mi.updated_at AS marketplace_updated_at,
                     mi.availability_status AS availability_status,
                     mi.buying_option_summary AS buying_option_summary,
                     mi.item_end_at AS item_end_at,
@@ -3229,6 +3272,8 @@ class Storage:
         offset: int = 0,
         include_ignored: bool = False,
         include_stale: bool = False,
+        lightweight: bool = False,
+        source_max_age_hours: int | None = None,
         max_alert_item_age_minutes: int = DEFAULT_MAX_ALERT_ITEM_AGE_MINUTES,
         max_priority_review_item_age_hours: int = DEFAULT_MAX_PRIORITY_REVIEW_ITEM_AGE_HOURS,
         max_active_queue_item_age_hours: int = DEFAULT_MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS,
@@ -3246,9 +3291,12 @@ class Storage:
         if not include_ignored:
             clauses.append("uis.user_status != 'ignored'")
         if not include_stale:
-            active_cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_active_queue_item_age_hours)).isoformat()
+            source_hours = max(1, int(source_max_age_hours or max_active_queue_item_age_hours))
+            active_cutoff = (datetime.now(timezone.utc) - timedelta(hours=source_hours)).isoformat()
             clauses.append("COALESCE(mi.item_origin_at, mi.found_at) >= ?")
             params.append(active_cutoff)
+        raw_description_select = "NULL AS raw_description" if lightweight else "mi.raw_description AS raw_description"
+        raw_json_select = "'{}' AS raw_json" if lightweight else "mi.raw_json AS raw_json"
         with self.connect() as connection:
             rows = connection.execute(
                 f"""
@@ -3265,8 +3313,8 @@ class Storage:
                     mi.seller_username AS seller_username,
                     mi.seller_feedback_percentage AS seller_feedback_percentage,
                     mi.seller_feedback_score AS seller_feedback_score,
-                    mi.raw_description AS raw_description,
-                    mi.raw_json AS raw_json,
+                    {raw_description_select},
+                    {raw_json_select},
                     mi.item_origin_at AS item_origin_at,
                     mi.marketplace_origin_at AS marketplace_origin_at,
                     mi.first_seen_at AS first_seen_at,
@@ -4074,6 +4122,14 @@ class Storage:
                 ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),),
             ).fetchone()
             rollups = connection.execute("SELECT COUNT(*) n FROM search_daily_rollups").fetchone()
+            research = connection.execute(
+                "SELECT COUNT(*) n, COALESCE(SUM(LENGTH(evidence_json)),0) json_bytes, MAX(updated_at) newest_at "
+                "FROM research_evidence"
+            ).fetchone()
+            raw_payloads = connection.execute(
+                "SELECT COUNT(*) n FROM marketplace_items "
+                "WHERE COALESCE(raw_description,'')<>'' OR COALESCE(raw_json,'{}') NOT IN ('','{}')"
+            ).fetchone()
             latest = connection.execute(
                 "SELECT * FROM retention_runs ORDER BY id DESC LIMIT 1"
             ).fetchone()
@@ -4102,7 +4158,12 @@ class Storage:
             "database_size_bytes": size_bytes,
             "trace_rows": traces["row_count"], "trace_recent_24h": traces["recent_24h"] or 0,
             "trace_oldest_at": traces["oldest_at"], "trace_newest_at": traces["newest_at"],
-            "aggregate_rows": rollups["n"], "latest_retention_run": dict(latest) if latest else None,
+            "aggregate_rows": rollups["n"],
+            "research_evidence_rows": research["n"],
+            "research_evidence_json_bytes": research["json_bytes"] or 0,
+            "research_evidence_newest_at": research["newest_at"],
+            "raw_payload_rows": raw_payloads["n"],
+            "latest_retention_run": dict(latest) if latest else None,
             "retention_rows_removed": removed_totals,
         }
 
@@ -4588,7 +4649,11 @@ class Storage:
         max_alert_item_age_minutes: int = DEFAULT_MAX_ALERT_ITEM_AGE_MINUTES,
         max_priority_review_item_age_hours: int = DEFAULT_MAX_PRIORITY_REVIEW_ITEM_AGE_HOURS,
         max_active_queue_item_age_hours: int = DEFAULT_MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS,
+        source_max_age_hours: int | None = None,
     ) -> dict[str, Any]:
+        source_cutoff = None
+        if source_max_age_hours is not None:
+            source_cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(source_max_age_hours)))).isoformat()
         with self.connect() as connection:
             rows = connection.execute(
                 """
@@ -4649,8 +4714,9 @@ class Storage:
                 FROM user_item_states uis
                 INNER JOIN marketplace_items mi ON mi.id = uis.marketplace_item_id
                 WHERE uis.user_id = ?
+                  AND (? IS NULL OR COALESCE(mi.item_origin_at, mi.found_at) >= ?)
                 """,
-                (user_id,),
+                (user_id, source_cutoff, source_cutoff),
             ).fetchall()
         items = [
             _row_to_dict(
@@ -4730,6 +4796,99 @@ class Storage:
                 (marketplace, item_id),
             ).fetchone()
         return dict(row) if row else None
+
+    def upsert_research_evidence(
+        self,
+        *,
+        user_id: int,
+        marketplace_item_id: int,
+        item_id: str,
+        evidence_day: str,
+        interesting: bool,
+        evidence: dict[str, Any],
+        timestamp: str | None = None,
+    ) -> None:
+        now = timestamp or now_iso()
+        payload = json.dumps(evidence, separators=(",", ":"), sort_keys=True)
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO research_evidence (
+                       user_id, marketplace_item_id, item_id, evidence_day, interesting,
+                       evidence_json, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id, item_id) DO UPDATE SET
+                       marketplace_item_id=excluded.marketplace_item_id, evidence_day=excluded.evidence_day,
+                       interesting=excluded.interesting, evidence_json=excluded.evidence_json,
+                       updated_at=excluded.updated_at""",
+                (int(user_id), int(marketplace_item_id), str(item_id), str(evidence_day),
+                 int(bool(interesting)), payload, now, now),
+            )
+
+    def list_research_bundle_days(
+        self, *, after_day: str = "", updated_after: str = "", limit: int = 365,
+    ) -> list[dict[str, Any]]:
+        """Return full-day bundle metadata for days whose archive changed.
+
+        ``updated_after`` is the preferred incremental cursor because compact evidence
+        can be refreshed later when human feedback/outcomes arrive.  ``after_day`` is
+        retained for simple manual browsing.
+        """
+        limit = max(1, min(int(limit), 1000))
+        params: list[Any] = []
+        changed_where: list[str] = []
+        if after_day:
+            changed_where.append("evidence_day > ?")
+            params.append(str(after_day))
+        if updated_after:
+            changed_where.append("updated_at > ?")
+            params.append(str(updated_after))
+        where_sql = " AND ".join(changed_where) if changed_where else "1=1"
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""WITH changed_days AS (
+                        SELECT DISTINCT evidence_day
+                        FROM research_evidence
+                        WHERE {where_sql}
+                        ORDER BY evidence_day ASC
+                        LIMIT ?
+                    )
+                    SELECT re.evidence_day AS day, COUNT(*) AS records,
+                           SUM(CASE WHEN re.interesting=1 THEN 1 ELSE 0 END) AS interesting_records,
+                           MIN(re.id) AS first_id, MAX(re.id) AS last_id,
+                           MAX(re.updated_at) AS updated_at
+                    FROM research_evidence re
+                    JOIN changed_days cd ON cd.evidence_day=re.evidence_day
+                    GROUP BY re.evidence_day ORDER BY re.evidence_day ASC""",
+                [*params, limit],
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_research_evidence(
+        self, *, evidence_day: str, after_id: int = 0, limit: int = 5000, user_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 10000))
+        clauses = ["evidence_day = ?", "id > ?"]
+        params: list[Any] = [str(evidence_day), max(0, int(after_id))]
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(int(user_id))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT id, user_id, item_id, evidence_day, interesting, evidence_json, created_at, updated_at
+                    FROM research_evidence WHERE {' AND '.join(clauses)} ORDER BY id ASC LIMIT ?""",
+                [*params, limit],
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            try:
+                evidence = json.loads(data.pop("evidence_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                evidence = {}
+            data["interesting"] = bool(data.get("interesting"))
+            data["evidence"] = evidence
+            result.append(data)
+        return result
 
     def _migrate_legacy_items_to_split(self, connection: sqlite3.Connection) -> None:
         legacy_total = connection.execute("SELECT COUNT(*) AS count FROM items").fetchone()["count"]

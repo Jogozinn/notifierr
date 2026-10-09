@@ -11,6 +11,7 @@ export default function ItemTable({
   items,
   loading,
   isAdmin = false,
+  onLoadDetails,
   onWatch,
   onReview,
   onIgnore,
@@ -27,6 +28,8 @@ export default function ItemTable({
   onNote,
 }) {
   const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const [detailLoadingIds, setDetailLoadingIds] = useState(() => new Set());
+  const [detailErrorIds, setDetailErrorIds] = useState(() => new Set());
 
   if (loading) {
     return <div className="empty-state"><span className="empty-state-kicker">Loading</span><strong>Refreshing deal intelligence…</strong></div>;
@@ -105,15 +108,21 @@ export default function ItemTable({
                     <Badge tone={userTone(item.user_status)}>{item.user_status || "new"}</Badge>
                     {item.outcome_status ? <Badge tone="info">{item.outcome_status}</Badge> : null}
                   </div>
-                  <ExpandedDetails
-                    item={item}
-                    isAdmin={isAdmin}
-                    onUpdatePartCost={onUpdatePartCost}
-                    onUpdateGlobalPartCost={onUpdateGlobalPartCost}
-                    onSaveCorrection={onSaveCorrection}
-                    onClearCorrection={onClearCorrection}
-                    onOutcome={onOutcome}
-                  />
+                  {item._detailsLoaded ? (
+                    <ExpandedDetails
+                      item={item}
+                      isAdmin={isAdmin}
+                      onUpdatePartCost={onUpdatePartCost}
+                      onUpdateGlobalPartCost={onUpdateGlobalPartCost}
+                      onSaveCorrection={onSaveCorrection}
+                      onClearCorrection={onClearCorrection}
+                      onOutcome={onOutcome}
+                    />
+                  ) : detailLoadingIds.has(item.item_id) ? (
+                    <div className="detail-load-state">Loading description and evidence…</div>
+                  ) : detailErrorIds.has(item.item_id) ? (
+                    <div className="detail-load-state detail-load-error">Could not load full listing details. Tap Details to retry.</div>
+                  ) : null}
                   <div className="deal-secondary-actions">
                     <div className="secondary-action-buttons">
                       <button type="button" onClick={() => onIgnore(item)}>Ignore item</button>
@@ -160,7 +169,7 @@ export default function ItemTable({
               ) : null}
               <button type="button" className="action-watch" onClick={() => onWatch(item)}>Watch</button>
               <button type="button" className="action-review" onClick={() => onReview(item)}>Reviewed</button>
-              <button type="button" className="action-details" onClick={() => toggleExpanded(item.item_id)} aria-expanded={expanded}>
+              <button type="button" className="action-details" onClick={() => toggleExpanded(item)} aria-expanded={expanded}>
                 {expanded ? "Hide details" : "Details"}
               </button>
             </div>
@@ -170,16 +179,25 @@ export default function ItemTable({
     </section>
   );
 
-  function toggleExpanded(itemId) {
+  async function toggleExpanded(item) {
+    const itemId = item.item_id;
+    const isExpanded = expandedIds.has(itemId);
     setExpandedIds((current) => {
       const next = new Set(current);
-      if (next.has(itemId)) {
-        next.delete(itemId);
-      } else {
-        next.add(itemId);
-      }
+      if (next.has(itemId)) next.delete(itemId);
+      else next.add(itemId);
       return next;
     });
+    if (isExpanded || item._detailsLoaded || !onLoadDetails) return;
+    setDetailErrorIds((current) => { const next = new Set(current); next.delete(itemId); return next; });
+    setDetailLoadingIds((current) => new Set(current).add(itemId));
+    try {
+      await onLoadDetails(item);
+    } catch {
+      setDetailErrorIds((current) => new Set(current).add(itemId));
+    } finally {
+      setDetailLoadingIds((current) => { const next = new Set(current); next.delete(itemId); return next; });
+    }
   }
 }
 

@@ -6,6 +6,7 @@ import copy
 import inspect
 import hashlib
 import json
+import gzip
 import logging
 import os
 import re
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -1972,6 +1973,7 @@ def _cached_dashboard_stats_for_user(user_id: int) -> dict[str, Any]:
         return copy.deepcopy(cached[1])
     payload = storage.stats_for_user(
         user_id,
+        source_max_age_hours=max(1, int(settings.dashboard_hot_hours)),
         **_dashboard_freshness_kwargs(user_id),
     )
     payload["scan_funnel"] = _latest_scan_funnel(user_id)
@@ -1979,7 +1981,11 @@ def _cached_dashboard_stats_for_user(user_id: int) -> dict[str, Any]:
     delivered = storage.successfully_notified_item_ids(user_id)
     tiers = Counter()
     never_notified = 0
-    for item in storage.list_user_items(user_id, limit=500, include_stale=False, **resolved.freshness_kwargs()):
+    for item in storage.list_user_items(
+        user_id, limit=500, include_stale=False, lightweight=True,
+        source_max_age_hours=max(1, int(settings.dashboard_hot_hours)),
+        **resolved.freshness_kwargs(),
+    ):
         decorated = _decorate_item_for_user(item, user_id=user_id, pricing_context=_cached_pricing_context_for_user(user_id))
         decision = evaluate_alert_decision(decorated, SimpleNamespace(), resolved)
         if decision.tier:
@@ -2367,6 +2373,22 @@ def require_admin_user_if_auth_enabled(
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def require_research_export_access(
+    research_token: Optional[str] = Header(default=None, alias="X-Notifierr-Research-Token"),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+) -> dict[str, Any]:
+    configured = str(settings.research_export_token or "")
+    supplied = str(research_token or "")
+    if configured and supplied and secrets.compare_digest(configured, supplied):
+        return {"role": "research_export", "id": 0}
+    if settings.auth_required:
+        user = _get_current_user(credentials, require_token=True)
+        if not user or user.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin or research-export access required")
+        return user
+    return {"role": "admin", "id": 0}
 
 
 def _first_user_setup_required() -> bool:
@@ -3445,6 +3467,72 @@ def admin_latest_fresh_scan_export(
 ) -> dict[str, Any]:
     del admin_user
     return build_latest_fresh_scan_audit_export(limit=limit)
+
+
+@app.get("/admin/research/bundles")
+def research_bundle_index(
+    after: str = Query(default=""),
+    updated_after: str = Query(default=""),
+    limit: int = Query(default=365, ge=1, le=1000),
+    _access: dict[str, Any] = Depends(require_research_export_access),
+) -> dict[str, Any]:
+    del _access
+    if after:
+        try:
+            date.fromisoformat(after)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="after must be YYYY-MM-DD") from None
+    if updated_after:
+        try:
+            datetime.fromisoformat(updated_after.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="updated_after must be an ISO-8601 timestamp") from None
+    bundles = storage.list_research_bundle_days(
+        after_day=after, updated_after=updated_after, limit=limit,
+    )
+    cursor = max((str(bundle.get("updated_at") or "") for bundle in bundles), default=updated_after)
+    return {
+        "bundles": bundles,
+        "cursor": cursor,
+        "compact_after_hours": settings.research_compact_after_hours,
+        "format": "jsonl.gz",
+    }
+
+
+@app.get("/admin/research/bundles/{bundle_day}")
+def research_bundle_download(
+    bundle_day: str,
+    interesting_only: bool = False,
+    _access: dict[str, Any] = Depends(require_research_export_access),
+) -> Response:
+    del _access
+    try:
+        date.fromisoformat(bundle_day)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="bundle_day must be YYYY-MM-DD") from None
+    rows = storage.list_research_evidence(evidence_day=bundle_day, limit=10000)
+    if interesting_only:
+        rows = [row for row in rows if row.get("interesting")]
+    summary = {
+        "type": "summary",
+        "schema": 1,
+        "day": bundle_day,
+        "records": len(rows),
+        "interesting_records": sum(bool(row.get("interesting")) for row in rows),
+        "generated_at": _utc_now_iso(),
+    }
+    lines = [json.dumps(summary, separators=(",", ":"), sort_keys=True)]
+    for row in rows:
+        lines.append(json.dumps({"type": "evidence", **row}, separators=(",", ":"), sort_keys=True))
+    content = gzip.compress(("\n".join(lines) + "\n").encode("utf-8"), compresslevel=9)
+    return Response(
+        content=content,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="notifierr-research-{bundle_day}.jsonl.gz"',
+            "X-Notifierr-Records": str(len(rows)),
+        },
+    )
 
 
 @app.post("/admin/scan/trace-replay")
@@ -4538,6 +4626,8 @@ def list_items(
     offset: int = Query(default=0, ge=0),
     include_ignored: bool = False,
     include_stale: bool = False,
+    lightweight: bool = False,
+    source_max_age_hours: Optional[int] = Query(default=None, ge=1, le=720),
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> list[dict[str, Any]]:
     if not user:
@@ -4556,6 +4646,8 @@ def list_items(
         offset=0 if missed_opportunities else offset_value,
         include_ignored=include_ignored,
         include_stale=include_stale,
+        lightweight=lightweight,
+        source_max_age_hours=source_max_age_hours,
         **freshness_kwargs,
     )
     corrections = storage.list_user_item_corrections_for_items(
@@ -4677,6 +4769,7 @@ def dashboard_items(
     include_stale: bool = False,
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> dict[str, Any]:
+    started = monotonic_time.perf_counter()
     if queue not in _DASHBOARD_QUEUES or sort not in {"newest", "profit", "score", "price"}:
         raise HTTPException(status_code=400, detail="Invalid dashboard queue or sort")
     if not user:
@@ -4685,13 +4778,29 @@ def dashboard_items(
     matched: list[dict[str, Any]] = []
     query = search.strip().lower()
     source_offset = 0
-    # The storage query is bounded, while queue membership and sorting happen before page slicing.
-    while True:
+    source_rows = 0
+    # The ordinary dashboard is intentionally a hot-data view. Historical browsing is
+    # explicit and still bounded so an old archive cannot stall every refresh.
+    source_cap = 2500 if include_stale else 1500
+    source_age_hours = None if include_stale else max(1, int(settings.dashboard_hot_hours))
+    watermark = ""
+    while source_rows < source_cap:
+        batch_limit = min(250, source_cap - source_rows)
         batch = list_items(
-            status=None, user_status=None, limit=500, offset=source_offset,
-            include_ignored=True, include_stale=True, user=user,
+            status=None, user_status=None, limit=batch_limit, offset=source_offset,
+            include_ignored=True, include_stale=include_stale, lightweight=True,
+            source_max_age_hours=source_age_hours, user=user,
         )
+        if not batch:
+            break
+        source_rows += len(batch)
         for item in batch:
+            watermark = max(
+                watermark,
+                str(item.get("updated_at") or ""),
+                str(item.get("marketplace_updated_at") or ""),
+                str(item.get("found_at") or ""),
+            )
             for name in counts:
                 if _dashboard_visible_in_queue(
                     item, name, include_ignored=include_ignored, include_stale=include_stale,
@@ -4702,10 +4811,77 @@ def dashboard_items(
             ) and _dashboard_search_matches(item, query):
                 matched.append(item)
         source_offset += len(batch)
-        if len(batch) < 500:
+        if len(batch) < batch_limit:
             break
     matched.sort(key=lambda item: _dashboard_sort_key(item, sort, queue), reverse=True)
-    return {"items": matched[offset:offset + limit], "total": len(matched), "counts": counts, "limit": limit, "offset": offset}
+    elapsed_ms = round((monotonic_time.perf_counter() - started) * 1000, 1)
+    return {
+        "items": matched[offset:offset + limit],
+        "total": len(matched),
+        "counts": counts,
+        "limit": limit,
+        "offset": offset,
+        "watermark": watermark,
+        "source_truncated": source_rows >= source_cap,
+        "performance": {
+            "elapsed_ms": elapsed_ms,
+            "source_rows": source_rows,
+            "returned_items": min(limit, max(0, len(matched) - offset)),
+            "hot_hours": None if include_stale else source_age_hours,
+            "lightweight": True,
+        },
+    }
+
+
+@app.get("/items/dashboard/changes")
+def dashboard_changes(
+    after: str = Query(default=""),
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    """Tiny polling probe; avoids hydrating listings when nothing changed."""
+    if not user:
+        return {"changed": False, "watermark": after, "changed_rows": 0}
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(settings.dashboard_hot_hours)))).isoformat()
+    with storage.connect() as connection:
+        row = connection.execute(
+            """SELECT COUNT(*) AS changed_rows,
+                      MAX(CASE WHEN uis.updated_at > mi.updated_at THEN uis.updated_at ELSE mi.updated_at END) AS watermark
+               FROM user_item_states uis JOIN marketplace_items mi ON mi.id=uis.marketplace_item_id
+               WHERE uis.user_id=? AND COALESCE(mi.item_origin_at, mi.found_at)>=?
+                 AND (uis.updated_at>? OR mi.updated_at>?)""",
+            (int(user["id"]), cutoff, after or "", after or ""),
+        ).fetchone()
+    changed_rows = int((row or {}).get("changed_rows") or 0) if isinstance(row, dict) else int(row["changed_rows"] or 0)
+    watermark = ((row or {}).get("watermark") if isinstance(row, dict) else row["watermark"]) or after
+    return {"changed": changed_rows > 0, "watermark": watermark, "changed_rows": changed_rows}
+
+
+@app.get("/items/{item_id}/detail")
+def item_detail(
+    item_id: str,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    user_id = int(user["id"])
+    resolved = _resolve_effective_user_settings(user)
+    item = storage.get_user_item(user_id, item_id, **resolved.freshness_kwargs())
+    if not item:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    corrections = storage.list_user_item_corrections_for_items(user_id, [item_id])
+    correction_by_item_id = {str(entry.get("item_id") or ""): entry for entry in corrections}
+    decorated = _decorate_alert_decision(
+        _decorate_item_for_user(
+            item,
+            user_id=user_id,
+            pricing_context=_cached_pricing_context_for_user(user_id),
+            correction_by_item_id=correction_by_item_id,
+        ),
+        resolved,
+    )
+    decorated["successfully_notified"] = item_id in storage.successfully_notified_item_ids(user_id)
+    decorated["never_notified_actionable"] = bool(
+        decorated.get("alert_tier") in {"GEM", "PROFITABLE"} and not decorated["successfully_notified"]
+    )
+    return {"item": decorated}
 
 
 @app.get("/stats")
@@ -5496,6 +5672,7 @@ async def _scan_shared_once_unlocked(
     total_alerts_sent = 0
     new_items_found = 0
     duplicates_skipped = 0
+    duplicates_not_rescored = 0
     fresh_items_found = 0
     stale_items_seen = 0
     best_finds = 0
@@ -5563,17 +5740,36 @@ async def _scan_shared_once_unlocked(
                     continue
                 item_search_ids.setdefault(item_id, set()).add(search_id)
                 if item_id not in unique_listings:
-                    if storage.marketplace_item_exists(item_id):
+                    existing_market = storage.get_marketplace_item(item_id, marketplace=entry.marketplace)
+                    already_seen = existing_market is not None
+                    market_changed = False
+                    if existing_market:
+                        for field_name in ("title", "price", "shipping", "total_cost", "availability_status", "buying_option_summary"):
+                            incoming = listing.get(field_name)
+                            previous = existing_market.get(field_name)
+                            if incoming not in (None, "") and str(incoming) != str(previous if previous is not None else ""):
+                                market_changed = True
+                                break
+                    if already_seen:
                         duplicates_skipped += 1
                         search_metrics[search_id]["duplicate_items"] += 1
                     else:
                         new_items_found += 1
                         search_metrics[search_id]["unique_new_items"].add(item_id)
                         storage.upsert_marketplace_item(listing, marketplace=entry.marketplace)
-                    unique_listings[item_id] = dict(listing)
+                    unique_listings[item_id] = {
+                        **dict(listing),
+                        "_notifierr_already_seen": already_seen,
+                        "_notifierr_market_changed": market_changed,
+                    }
                 else:
                     search_metrics[search_id]["duplicate_items"] += 1
-                    unique_listings[item_id] = {**unique_listings[item_id], **dict(listing)}
+                    prior = unique_listings[item_id]
+                    unique_listings[item_id] = {
+                        **prior, **dict(listing),
+                        "_notifierr_already_seen": bool(prior.get("_notifierr_already_seen")),
+                        "_notifierr_market_changed": bool(prior.get("_notifierr_market_changed")),
+                    }
                 subscriber_ids = item_subscribers.setdefault(item_id, set())
                 for resolved in entry.subscribers:
                     if resolved.user:
@@ -5584,6 +5780,32 @@ async def _scan_shared_once_unlocked(
             subscribed_users = [resolved_by_user_id[user_id] for user_id in subscriber_ids if user_id in resolved_by_user_id]
             if not subscribed_users:
                 continue
+            already_seen = bool(listing.pop("_notifierr_already_seen", False))
+            market_changed = bool(listing.pop("_notifierr_market_changed", False))
+            if already_seen and not market_changed:
+                users_needing_rescore = []
+                for resolved in subscribed_users:
+                    user_id = int(resolved.user["id"])
+                    stored_identity = storage.user_item_state_identity(user_id, item_id)
+                    if stored_identity is None:
+                        users_needing_rescore.append(resolved)
+                        continue
+                    pricing_context = _pricing_context_for_user(user_id, pricing_context_cache)
+                    current_identity = identity_cache.get(user_id)
+                    if current_identity is None:
+                        current_identity = decision_identity(
+                            scoring_rules=scoring_rules,
+                            repair_values=pricing_context.repair_values,
+                            resale_research=pricing_context.resale_research,
+                            effective_settings=resolved,
+                        )
+                        identity_cache[user_id] = current_identity
+                    if any(stored_identity.get(key) != current_identity.get(key) for key in current_identity):
+                        users_needing_rescore.append(resolved)
+                if not users_needing_rescore:
+                    duplicates_not_rescored += 1
+                    continue
+                subscribed_users = users_needing_rescore
             initial_results: dict[int, Any] = {}
             should_fetch_detail = False
             detail_fetch_succeeded = False
@@ -5869,6 +6091,7 @@ async def _scan_shared_once_unlocked(
         "alerts_sent": total_alerts_sent,
         "alerted": total_alerts_sent,
         "duplicates_skipped": duplicates_skipped,
+        "duplicates_not_rescored": duplicates_not_rescored,
         "unique_searches": len(plan),
         "unique_marketplace_items": len(unique_listings),
         "active_users": len(resolved_users),

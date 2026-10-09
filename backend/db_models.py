@@ -690,6 +690,24 @@ retention_runs = sa.Table(
 )
 
 
+research_evidence = sa.Table(
+    "research_evidence", metadata,
+    sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+    sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    # Provenance only: deliberately not a FK so compact evidence survives raw-listing retention.
+    sa.Column("marketplace_item_id", sa.Integer(), nullable=False),
+    sa.Column("item_id", sa.Text(), nullable=False),
+    sa.Column("evidence_day", sa.Text(), nullable=False),
+    sa.Column("interesting", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    sa.Column("evidence_json", sa.Text(), nullable=False),
+    sa.Column("created_at", sa.Text(), nullable=False),
+    sa.Column("updated_at", sa.Text(), nullable=False),
+    sa.UniqueConstraint("user_id", "item_id", name="uq_research_evidence_user_item"),
+    sa.Index("idx_research_evidence_day", "evidence_day", "id"),
+    sa.Index("idx_research_evidence_user_day", "user_id", "evidence_day", "id"),
+)
+
+
 source_statuses = sa.Table(
     "source_statuses",
     metadata,

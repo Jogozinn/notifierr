@@ -10,6 +10,8 @@ import {
   getAuthStatus,
   getCurrentUser,
   getDashboardItems,
+  getDashboardChanges,
+  getItemDetail,
   getPollingStatus,
   getUserKeywords,
   getUserNotifications,
@@ -129,6 +131,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const dashboardRequestRef = useRef(0);
+  const dashboardWatermarkRef = useRef("");
 
   useEffect(() => {
     const linkedItem = new URLSearchParams(window.location.search).get("item");
@@ -185,7 +188,7 @@ export default function App() {
           offset: pageOffset,
           limit: DASHBOARD_PAGE_SIZE,
           includeIgnored: includeIgnored || activeTab === "ignored",
-          includeStale: includeStale || activeTab === "all",
+          includeStale,
         }),
       ]);
       if (dashboardRequestRef.current !== requestId) {
@@ -195,6 +198,7 @@ export default function App() {
       setItems(nextPage.items);
       setDashboardCounts(nextPage.counts);
       setDashboardTotal(nextPage.total);
+      if (nextPage.watermark) dashboardWatermarkRef.current = nextPage.watermark;
       if (pageOffset > 0 && pageOffset >= nextPage.total) {
         setPageOffset(Math.max(0, Math.floor((nextPage.total - 1) / DASHBOARD_PAGE_SIZE) * DASHBOARD_PAGE_SIZE));
       }
@@ -313,7 +317,17 @@ export default function App() {
         setPollingStatus(next);
         const completedCycle = next.last_background_cycle_id ?? next.last_background_succeeded_at;
         if (shouldRefreshDashboard(lastBackgroundCycleRef.current, next)) {
-          await loadDashboard({ background: true });
+          const watermark = dashboardWatermarkRef.current;
+          if (!watermark) {
+            await loadDashboard({ background: true });
+          } else {
+            const changes = await getDashboardChanges(watermark);
+            if (changes.changed) {
+              await loadDashboard({ background: true });
+            } else if (changes.watermark) {
+              dashboardWatermarkRef.current = changes.watermark;
+            }
+          }
         }
         lastBackgroundCycleRef.current = completedCycle || lastBackgroundCycleRef.current;
       } catch (err) {
@@ -617,6 +631,23 @@ export default function App() {
     }
   }
 
+  async function handleLoadItemDetails(item) {
+    if (!item?.item_id || item._detailsLoaded) return item;
+    try {
+      const result = await getItemDetail(item.item_id);
+      const detailed = { ...(result.item || item), _detailsLoaded: true };
+      setItems((current) => current.map((entry) => entry.item_id === item.item_id ? detailed : entry));
+      return detailed;
+    } catch (err) {
+      if (err.status === 401) {
+        handleAuthRequired();
+        return item;
+      }
+      setError(err.message);
+      throw err;
+    }
+  }
+
   async function handleRunScan() {
     setError("");
     setNotice("");
@@ -884,6 +915,7 @@ export default function App() {
         items={visibleItems}
         loading={loading}
         isAdmin={authUser?.role === "admin"}
+        onLoadDetails={handleLoadItemDetails}
         onWatch={(item) => runAction(() => watchItem(item.item_id), { updateItem: true, refreshDashboard: false })}
         onReview={(item) => runAction(() => reviewItem(item.item_id), { updateItem: true, refreshDashboard: false })}
         onIgnore={(item) => {

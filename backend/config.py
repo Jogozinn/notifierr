@@ -121,6 +121,9 @@ class Settings:
     max_priority_review_item_age_hours: int = 24
     max_active_queue_item_age_hours: int = 24
     stale_archive_after_days: int = 7
+    dashboard_hot_hours: int = 36
+    research_compact_after_hours: int = 36
+    research_export_token: Optional[str] = None
     background_poll_enabled: bool = False
     background_poll_seconds: int = 600
     background_poll_active_start: Optional[str] = None
@@ -178,6 +181,9 @@ class Settings:
             "max_priority_review_item_age_hours": self.max_priority_review_item_age_hours,
             "max_active_queue_item_age_hours": self.max_active_queue_item_age_hours,
             "stale_archive_after_days": self.stale_archive_after_days,
+            "dashboard_hot_hours": self.dashboard_hot_hours,
+            "research_compact_after_hours": self.research_compact_after_hours,
+            "research_export_configured": bool(self.research_export_token),
             "background_poll_enabled": self.background_poll_enabled,
             "background_poll_seconds": self.background_poll_seconds,
             "background_poll_active_start": self.background_poll_active_start,
@@ -237,6 +243,9 @@ def load_settings() -> Settings:
         max_priority_review_item_age_hours=_env_int("MAX_PRIORITY_REVIEW_ITEM_AGE_HOURS", 24),
         max_active_queue_item_age_hours=_env_int("MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS", 24),
         stale_archive_after_days=_env_int("STALE_ARCHIVE_AFTER_DAYS", 7),
+        dashboard_hot_hours=_env_int("DASHBOARD_HOT_HOURS", 36),
+        research_compact_after_hours=_env_int("RESEARCH_COMPACT_AFTER_HOURS", 36),
+        research_export_token=os.getenv("RESEARCH_EXPORT_TOKEN") or None,
         background_poll_enabled=_env_bool("BACKGROUND_POLL_ENABLED", False),
         background_poll_seconds=_env_int("BACKGROUND_POLL_SECONDS", 600),
         background_poll_active_start=os.getenv("BACKGROUND_POLL_ACTIVE_START") or None,

@@ -30,11 +30,12 @@ class RetentionPolicy:
     search_days: int = 30
     notification_days: int = 90
     stale_item_days: int = 30
+    compact_after_hours: int = 36
     batch_size: int = 500
 
     def __post_init__(self) -> None:
         if min(self.trace_days, self.reviewed_trace_days, self.search_days, self.notification_days,
-               self.stale_item_days, self.batch_size) < 1:
+               self.stale_item_days, self.compact_after_hours, self.batch_size) < 1:
             raise ValueError("Retention periods and batch size must be positive")
 
 
@@ -43,11 +44,13 @@ def _iso(value: datetime) -> str:
 
 
 def _cutoffs(policy: RetentionPolicy, now: datetime) -> dict[str, str]:
-    return {name: _iso(now - timedelta(days=days)) for name, days in (
+    cutoffs = {name: _iso(now - timedelta(days=days)) for name, days in (
         ("traces", policy.trace_days), ("searches", policy.search_days),
         ("reviewed_traces", policy.reviewed_trace_days),
         ("notifications", policy.notification_days), ("items", policy.stale_item_days),
     )}
+    cutoffs["compact"] = _iso(now - timedelta(hours=policy.compact_after_hours))
+    return cutoffs
 
 
 _PROTECTED = """EXISTS (SELECT 1 FROM user_item_feedback f WHERE f.marketplace_item_id = mi.id)
@@ -131,6 +134,220 @@ def _rollup_day(connection: Any, day: str, now: str) -> int:
     return int(run_count)
 
 
+
+def _compact_evidence_payload(row: dict[str, Any], archived_at: str) -> tuple[dict[str, Any], bool]:
+    try:
+        trace = json.loads(row.get("latest_trace_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        trace = {}
+    decision = trace.get("alert_decision") or {}
+    verdict = trace.get("verdict") or {}
+    listing_at = row.get("item_origin_at") or row.get("first_seen_at") or row.get("found_at")
+    age_minutes = None
+    try:
+        if listing_at:
+            origin = datetime.fromisoformat(str(listing_at).replace("Z", "+00:00"))
+            archived = datetime.fromisoformat(archived_at.replace("Z", "+00:00"))
+            age_minutes = max(0, int((archived - origin).total_seconds() // 60))
+    except (TypeError, ValueError):
+        age_minutes = None
+    def _json_list(value: Any) -> list[Any]:
+        if isinstance(value, list):
+            return value
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except (TypeError, json.JSONDecodeError):
+            return []
+    payload = {
+        "schema": 1,
+        "item_id": str(row.get("item_id") or ""),
+        "marketplace": str(row.get("marketplace") or "ebay"),
+        "listing_at": listing_at,
+        "first_seen_at": row.get("first_seen_at") or row.get("found_at"),
+        "archived_at": archived_at,
+        "age_at_archive_minutes": age_minutes,
+        "title": str(row.get("title") or "")[:180],
+        "model": row.get("model"),
+        "storage_capacity": row.get("storage_capacity"),
+        "item_type": row.get("item_type") or "ambiguous",
+        "purchase_total": row.get("total_cost"),
+        "repair_estimate": row.get("estimated_parts_cost"),
+        "resale_expected": row.get("resale_mid") or row.get("resale_value"),
+        "profit_floor": row.get("profit_low"),
+        "expected_net_profit": row.get("profit_mid") or row.get("estimated_profit"),
+        "profit_upside": row.get("profit_high"),
+        "score": row.get("score"),
+        "status": row.get("status"),
+        "user_status": row.get("user_status"),
+        "whole_phone_confidence_passed": bool(row.get("whole_phone_confidence_passed")),
+        "manual_review_reason": str(row.get("manual_review_reason") or "")[:240],
+        "positive_flags": _json_list(row.get("positive_flags")),
+        "risk_flags": _json_list(row.get("risk_flags")),
+        "hard_reject_flags": _json_list(row.get("hard_reject_flags")),
+        "classification_flags": _json_list(row.get("listing_classification_flags")),
+        "decision": {
+            "tier": decision.get("tier"),
+            "eligible": decision.get("eligible"),
+            "blocking_reasons": list(decision.get("blocking_reasons") or [])[:8],
+            "surfaced_reasons": list(decision.get("surfaced_reasons") or [])[:8],
+            "bucket": verdict.get("normalized_bucket") or verdict.get("bucket") or verdict.get("current_app_bucket"),
+        },
+        "notification_sent": bool(row.get("notification_sent")),
+        "feedback": row.get("feedback_label"),
+        "outcome": row.get("outcome_status"),
+        "actual_net_profit": row.get("actual_net_profit"),
+        "fingerprints": {
+            "scorer": row.get("scorer_hash") or "",
+            "rules": row.get("rules_hash") or "",
+            "repair": row.get("repair_hash") or "",
+            "resale": row.get("resale_hash") or "",
+        },
+    }
+    tier = str(payload["decision"].get("tier") or "").upper()
+    interesting = bool(
+        tier in {"GEM", "PROFITABLE", "REVIEW"}
+        or payload["notification_sent"]
+        or payload["feedback"]
+        or payload["outcome"]
+        or str(payload["user_status"] or "new") != "new"
+        or float(payload["expected_net_profit"] or 0) >= 25
+        or (float(payload["score"] or 0) >= 70 and str(payload["status"] or "") == "rejected")
+    )
+    return payload, interesting
+
+
+def _archive_research_evidence(storage: Storage, *, cutoff: str, stamp: str, batch_size: int, dry_run: bool) -> tuple[int, int]:
+    archived = compacted = 0
+    while True:
+        with storage.connect() as conn:
+            rows = conn.execute(
+                """SELECT mi.id AS marketplace_item_id, mi.marketplace_item_id AS item_id,
+                          mi.marketplace, mi.title, mi.price, mi.shipping, mi.total_cost,
+                          mi.item_origin_at, mi.first_seen_at, mi.found_at,
+                          mi.updated_at AS marketplace_updated_at,
+                          uis.user_id, uis.updated_at AS user_state_updated_at,
+                          uis.score, uis.status, uis.model, uis.storage_capacity,
+                          uis.item_type, uis.resale_value, uis.resale_mid, uis.profit_low,
+                          uis.profit_mid, uis.profit_high, uis.estimated_parts_cost,
+                          uis.estimated_profit, uis.whole_phone_confidence_passed,
+                          uis.manual_review_reason, uis.positive_flags, uis.risk_flags,
+                          uis.hard_reject_flags, uis.listing_classification_flags,
+                          uis.user_status, uis.scorer_hash, uis.rules_hash, uis.repair_hash,
+                          uis.resale_hash,
+                          (SELECT f.label FROM user_item_feedback f
+                           WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id) AS feedback_label,
+                          (SELECT f.updated_at FROM user_item_feedback f
+                           WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id) AS feedback_updated_at,
+                          (SELECT o.status FROM user_item_outcomes o
+                           WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS outcome_status,
+                          (SELECT o.updated_at FROM user_item_outcomes o
+                           WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS outcome_updated_at,
+                          (SELECT o.actual_net_profit FROM user_item_outcomes o
+                           WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id) AS actual_net_profit,
+                          EXISTS(SELECT 1 FROM notification_attempts n
+                                 WHERE n.user_id=uis.user_id AND n.item_id=mi.marketplace_item_id
+                                   AND n.status='sent') AS notification_sent,
+                          (SELECT MAX(n.created_at) FROM notification_attempts n
+                           WHERE n.user_id=uis.user_id AND n.item_id=mi.marketplace_item_id
+                             AND n.status='sent') AS notification_updated_at,
+                          (SELECT t.trace_json FROM listing_decision_traces t
+                           WHERE t.user_id=uis.user_id AND t.marketplace_item_id=mi.id
+                           ORDER BY t.id DESC LIMIT 1) AS latest_trace_json
+                   FROM marketplace_items mi JOIN user_item_states uis ON uis.marketplace_item_id=mi.id
+                   LEFT JOIN research_evidence re
+                     ON re.user_id=uis.user_id AND re.marketplace_item_id=mi.id
+                   WHERE mi.retention_managed=1 AND COALESCE(mi.first_seen_at, mi.found_at) < ?
+                     AND (
+                       re.id IS NULL
+                       OR uis.updated_at > re.updated_at
+                       OR mi.updated_at > re.updated_at
+                       OR EXISTS(SELECT 1 FROM user_item_feedback f
+                                 WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id
+                                   AND f.updated_at > re.updated_at)
+                       OR EXISTS(SELECT 1 FROM user_item_outcomes o
+                                 WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id
+                                   AND o.updated_at > re.updated_at)
+                       OR EXISTS(SELECT 1 FROM notification_attempts n
+                                 WHERE n.user_id=uis.user_id AND n.item_id=mi.marketplace_item_id
+                                   AND n.status='sent' AND n.created_at > re.updated_at)
+                     )
+                   ORDER BY mi.id, uis.user_id LIMIT ?""",
+                (cutoff, batch_size),
+            ).fetchall()
+        if not rows:
+            break
+        if dry_run:
+            with storage.connect() as conn:
+                archived = int(conn.execute(
+                    """SELECT COUNT(*) n
+                       FROM marketplace_items mi JOIN user_item_states uis ON uis.marketplace_item_id=mi.id
+                       LEFT JOIN research_evidence re
+                         ON re.user_id=uis.user_id AND re.marketplace_item_id=mi.id
+                       WHERE mi.retention_managed=1 AND COALESCE(mi.first_seen_at, mi.found_at) < ?
+                         AND (
+                           re.id IS NULL
+                           OR uis.updated_at > re.updated_at
+                           OR mi.updated_at > re.updated_at
+                           OR EXISTS(SELECT 1 FROM user_item_feedback f
+                                     WHERE f.user_id=uis.user_id AND f.marketplace_item_id=mi.id
+                                       AND f.updated_at > re.updated_at)
+                           OR EXISTS(SELECT 1 FROM user_item_outcomes o
+                                     WHERE o.user_id=uis.user_id AND o.marketplace_item_id=mi.id
+                                       AND o.updated_at > re.updated_at)
+                           OR EXISTS(SELECT 1 FROM notification_attempts n
+                                     WHERE n.user_id=uis.user_id AND n.item_id=mi.marketplace_item_id
+                                       AND n.status='sent' AND n.created_at > re.updated_at)
+                         )""",
+                    (cutoff,),
+                ).fetchone()["n"])
+                compacted = int(conn.execute(
+                    """SELECT COUNT(*) n FROM marketplace_items mi
+                       WHERE mi.retention_managed=1 AND COALESCE(mi.first_seen_at, mi.found_at) < ?
+                         AND (COALESCE(mi.raw_description,'')<>'' OR COALESCE(mi.raw_json,'{}') NOT IN ('','{}'))""",
+                    (cutoff,),
+                ).fetchone()["n"])
+            break
+        for raw in rows:
+            row = dict(raw)
+            payload, interesting = _compact_evidence_payload(row, stamp)
+            source_revision = max(
+                [stamp] + [
+                    str(row.get(key) or "")
+                    for key in (
+                        "marketplace_updated_at", "user_state_updated_at", "feedback_updated_at",
+                        "outcome_updated_at", "notification_updated_at",
+                    )
+                    if row.get(key)
+                ]
+            )
+            storage.upsert_research_evidence(
+                user_id=int(row["user_id"]), marketplace_item_id=int(row["marketplace_item_id"]),
+                item_id=str(row["item_id"]), evidence_day=str(row.get("first_seen_at") or row.get("found_at") or stamp)[:10],
+                interesting=interesting, evidence=payload, timestamp=source_revision,
+            )
+            archived += 1
+        # Strip bulky marketplace payload only once every user-state has an archive row.
+        with storage.connect() as conn:
+            result = conn.execute(
+                """UPDATE marketplace_items SET raw_description=NULL, raw_json='{}',
+                          detail_fetch_recovered_fields='[]', detail_fetch_reason='',
+                          detail_fetch_failure_reason='', availability_note=''
+                   WHERE retention_managed=1 AND COALESCE(first_seen_at, found_at) < ?
+                     AND (COALESCE(raw_description,'')<>'' OR COALESCE(raw_json,'{}') NOT IN ('','{}'))
+                     AND NOT EXISTS(
+                       SELECT 1 FROM user_item_states uis
+                       WHERE uis.marketplace_item_id=marketplace_items.id
+                         AND NOT EXISTS(SELECT 1 FROM research_evidence re
+                                        WHERE re.user_id=uis.user_id AND re.marketplace_item_id=marketplace_items.id)
+                     )""",
+                (cutoff,),
+            )
+            compacted += max(0, int(getattr(result, "rowcount", 0) or 0))
+    return archived, compacted
+
 def run_retention(
     storage: Storage, *, policy: RetentionPolicy | None = None,
     dry_run: bool = True, now: datetime | None = None,
@@ -149,6 +366,7 @@ def run_retention(
     counts: dict[str, int] = {name: 0 for name in (
         "rollup_days", "rollup_runs", "search_results", "searches", "scan_runs",
         "traces", "notifications", "marketplace_items", "user_item_states",
+        "research_evidence", "payloads_compacted",
     )}
     report: dict[str, Any] = {"dry_run": dry_run, "cutoffs": cutoffs, "counts": counts}
     run_id: int | None = None
@@ -160,6 +378,11 @@ def run_retention(
                     "VALUES (0,'running',?,?,?) RETURNING id",
                     (stamp, json.dumps(cutoffs), json.dumps(counts)),
                 ).fetchone()["id"])
+        archived_count, compacted_count = _archive_research_evidence(
+            storage, cutoff=cutoffs["compact"], stamp=stamp, batch_size=policy.batch_size, dry_run=dry_run,
+        )
+        counts["research_evidence"] = archived_count
+        counts["payloads_compacted"] = compacted_count
         day_offset = 0
         while True:
             with storage.connect() as conn:
@@ -337,6 +560,8 @@ def main() -> None:
     parser.add_argument("--search-days", type=int, default=30)
     parser.add_argument("--notification-days", type=int, default=90)
     parser.add_argument("--stale-item-days", type=int, default=30)
+    parser.add_argument("--compact-after-hours", type=int, default=None,
+                        help="Archive/strip bulky listing payload after this many hours (default from config or 36)")
     parser.add_argument("--batch-size", type=int, default=500)
     args = parser.parse_args()
     if os.getenv("NOTIFIERR_ENV", "local").strip().lower() == "production" and not args.configured:
@@ -357,9 +582,13 @@ def main() -> None:
         else:
             storage = (Storage(Path(args.sqlite), initialize=False, read_only=not args.apply)
                        if args.sqlite else PostgresStorage(args.database_url, initialize=False))
+        compact_hours = args.compact_after_hours
+        if compact_hours is None:
+            compact_hours = settings.research_compact_after_hours if args.configured else 36
         policy = RetentionPolicy(trace_days=args.trace_days, reviewed_trace_days=args.reviewed_trace_days,
                                  search_days=args.search_days, notification_days=args.notification_days,
-                                 stale_item_days=args.stale_item_days, batch_size=args.batch_size)
+                                 stale_item_days=args.stale_item_days, compact_after_hours=compact_hours,
+                                 batch_size=args.batch_size)
         report = run_retention(storage, policy=policy, dry_run=not args.apply)
     except Exception as exc:
         logging.error("Retention failed error_type=%s", type(exc).__name__)

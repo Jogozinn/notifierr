@@ -3396,3 +3396,457 @@ textarea:focus {
     min-height: 52px;
   }
 }
+
+/* Mobile-first performance/UI pass 2026-10-09 */
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.detail-load-state {
+  margin-top: 10px;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: rgba(255,255,255,.025);
+  color: var(--text-muted);
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.detail-load-error {
+  border-color: rgba(239,68,68,.25);
+  color: #fecaca;
+}
+
+@media (max-width: 760px) {
+  body {
+    background: #07090d;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px; /* Prevent Safari focus zoom. */
+  }
+
+  .app-shell {
+    width: 100%;
+    max-width: 100%;
+    padding: 10px 12px 34px;
+  }
+
+  .workspace-topbar {
+    position: static;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    width: 100%;
+    margin: 0;
+    padding: 8px 0 14px;
+    background: transparent;
+    backdrop-filter: none;
+  }
+
+  .brand-lockup {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .brand-lockup > div:last-child {
+    min-width: 0;
+  }
+
+  .brand-mark {
+    width: 42px;
+    height: 42px;
+  }
+
+  .topbar h1 {
+    font-size: 1.42rem;
+  }
+
+  .topbar p {
+    max-width: 280px;
+    font-size: .78rem;
+    line-height: 1.35;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 9px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .topbar-nav {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    padding: 4px;
+  }
+
+  .nav-button {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding-inline: 6px;
+    font-size: .82rem;
+  }
+
+  .keyword-form {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+  }
+
+  .keyword-form input {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .topbar-actions > .primary-button {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    width: 100%;
+    min-height: 46px;
+  }
+
+  .session-chip {
+    order: initial;
+    min-height: 40px;
+    display: flex;
+    align-items: center;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar-actions > button:not(.primary-button):last-child {
+    min-height: 40px;
+  }
+
+  .alert {
+    margin-top: 10px;
+    padding: 11px 12px;
+    font-size: .86rem;
+    overflow-wrap: anywhere;
+  }
+
+  .stats-panel {
+    margin-top: 14px;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .stat-cell {
+    min-width: 0;
+    min-height: 66px;
+    padding: 11px 12px;
+  }
+
+  .stat-cell span {
+    font-size: .64rem;
+  }
+
+  .stat-cell strong {
+    margin-top: 5px;
+    font-size: 1.14rem;
+  }
+
+  .scan-command-strip {
+    margin-top: 9px;
+    border-radius: 12px;
+  }
+
+  .scan-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .scan-meta {
+    min-width: 0;
+    padding: 10px 11px;
+  }
+
+  .scan-meta strong {
+    overflow-wrap: anywhere;
+  }
+
+  .live-summary {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .live-summary span {
+    min-width: 0;
+    padding: 8px 9px;
+  }
+
+  .scan-funnel {
+    overflow: hidden;
+  }
+
+  .scan-funnel-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workspace-controls {
+    margin-top: 12px;
+  }
+
+  .utility-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(112px, .55fr);
+    gap: 8px;
+    width: 100%;
+  }
+
+  .utility-controls input {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .utility-controls select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .toggle-control {
+    min-width: 0;
+    justify-content: flex-start;
+    gap: 7px;
+    font-size: .75rem;
+    white-space: normal;
+  }
+
+  .toggle-control input[type="checkbox"] {
+    flex: 0 0 auto;
+  }
+
+  .compact-header {
+    margin-top: 18px;
+  }
+
+  .content-header h2 {
+    font-size: 1rem;
+  }
+
+  .deal-list {
+    gap: 9px;
+  }
+
+  .deal-card,
+  .deal-card-expanded {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: 58px minmax(0, 1fr);
+    gap: 9px;
+    padding: 10px;
+    overflow: hidden;
+  }
+
+  .deal-media,
+  .deal-body,
+  .deal-title-copy,
+  .deal-title-row,
+  .badge-row,
+  .metric-grid,
+  .deal-review-reason,
+  .deal-actions {
+    min-width: 0;
+  }
+
+  .deal-media img,
+  .image-placeholder,
+  .deal-card-expanded .deal-media img,
+  .deal-card-expanded .image-placeholder {
+    width: 58px;
+    height: 58px;
+    border-radius: 9px;
+  }
+
+  .media-model {
+    max-width: 54px;
+    font-size: .55rem;
+  }
+
+  .deal-title-row h3 {
+    display: -webkit-box;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: .84rem;
+    line-height: 1.25;
+  }
+
+  .subline {
+    gap: 4px;
+    max-width: 100%;
+    overflow: hidden;
+    font-size: .66rem;
+  }
+
+  .subline span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .score-block {
+    flex: 0 0 42px;
+    min-width: 42px;
+    padding: 5px;
+  }
+
+  .badge-row-primary {
+    display: flex;
+    max-height: 46px;
+    overflow: hidden;
+    gap: 4px;
+  }
+
+  .badge {
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .metric {
+    min-width: 0;
+    padding: 7px 8px;
+  }
+
+  .metric:nth-child(5) {
+    display: block;
+  }
+
+  .metric span {
+    font-size: .56rem;
+  }
+
+  .metric strong {
+    font-size: .78rem;
+    overflow-wrap: anywhere;
+  }
+
+  .deal-review-reason {
+    padding: 6px 8px;
+    font-size: .65rem;
+  }
+
+  .deal-actions {
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .deal-actions > * {
+    min-width: 0;
+    min-height: 40px;
+    padding: 8px 6px;
+    font-size: .72rem;
+  }
+
+  .expanded-signal-row,
+  .expanded-details-v2,
+  .detail-overview-grid,
+  .detail-fact-grid,
+  .diagnostic-grid,
+  .deal-secondary-actions,
+  .outcome-grid,
+  .part-cost-form,
+  .item-correction-form {
+    grid-template-columns: 1fr !important;
+    min-width: 0;
+  }
+
+  .detail-panel,
+  .detail-section,
+  .detail-block,
+  .description-scroll,
+  .description-scroll-premium {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .description-scroll,
+  .description-scroll-premium {
+    max-height: 240px;
+  }
+
+  .settings-overlay {
+    align-items: flex-start;
+    overflow-y: auto;
+    padding: max(8px, env(safe-area-inset-top)) 8px 12px;
+  }
+
+  .settings-panel {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .settings-grid,
+  .admin-settings-grid,
+  .admin-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .auth-shell {
+    display: block;
+    min-height: 100dvh;
+    padding: 14px 12px 32px;
+  }
+
+  .auth-panel,
+  .auth-panel-wide {
+    width: 100%;
+    max-width: 100%;
+    padding: 18px 14px;
+    border-radius: 16px;
+  }
+
+  .auth-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .auth-section {
+    padding: 16px 14px;
+  }
+
+  .dashboard-pagination {
+    width: 100%;
+    gap: 6px;
+  }
+
+  .dashboard-pagination button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .dashboard-pagination span {
+    font-size: .7rem;
+    white-space: nowrap;
+  }
+}

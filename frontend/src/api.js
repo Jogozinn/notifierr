@@ -7,6 +7,23 @@ if (import.meta.env.PROD && (!configuredApiBase || !configuredApiBase.startsWith
 const API_BASE = configuredApiBase || "http://127.0.0.1:8000";
 const TOKEN_KEY = "notifierr_access_token";
 
+function errorDetailText(detail, fallback) {
+  if (!detail) return fallback;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((entry) => errorDetailText(entry, "")).filter(Boolean).join(" · ") || fallback;
+  }
+  if (typeof detail === "object") {
+    if (typeof detail.message === "string") return detail.message;
+    if (typeof detail.msg === "string") return detail.msg;
+    const parts = Object.entries(detail)
+      .filter(([, value]) => ["string", "number", "boolean"].includes(typeof value))
+      .map(([key, value]) => `${key.replaceAll("_", " ")}: ${value}`);
+    return parts.join(" · ") || fallback;
+  }
+  return String(detail);
+}
+
 async function request(path, options = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -25,7 +42,7 @@ async function request(path, options = {}) {
     let detail = `Request failed with ${response.status}`;
     try {
       const payload = await response.json();
-      detail = payload.detail || detail;
+      detail = errorDetailText(payload.detail, detail);
     } catch {
       // Keep the status-based message when the response is not JSON.
     }
@@ -301,6 +318,15 @@ export function getItems({ status = "all", userStatus = "", includeIgnored = fal
 
 export function getDashboardItems({ queue, sort, search, includeIgnored, includeStale, limit, offset }) {
   return request(dashboardItemsPath({ queue, sort, search, includeIgnored, includeStale, limit, offset }));
+}
+
+export function getDashboardChanges(after = "") {
+  const params = new URLSearchParams({ after });
+  return request(`/items/dashboard/changes?${params.toString()}`);
+}
+
+export function getItemDetail(itemId) {
+  return request(`/items/${encodeURIComponent(itemId)}/detail`);
 }
 
 export function runScan() {

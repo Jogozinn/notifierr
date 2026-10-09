@@ -78,9 +78,9 @@ def test_push_delivery_records_selected_and_accepted(tmp_path: Path) -> None:
     assert result.as_dict() == {"selected": 1, "accepted": 1, "failed": 0, "disabled": 0}
     assert calls[0]["subscription_info"]["endpoint"] == endpoint
     payload = json.loads(calls[0]["data"])
-    assert payload["title"].startswith("BEST FIND: iPhone 15")
+    assert payload["title"] == "iPhone 15 · $220 · +$90 projected"
     assert payload["url"] == "/?item=123"
-    assert "profit $90" in payload["body"]
+    assert payload["body"] == "GEM · Repair opportunity · Just listed"
     assert [row["status"] for row in storage.list_push_delivery_attempts(user_id)] == ["accepted", "attempted", "selected"]
 
 

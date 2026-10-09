@@ -69,28 +69,43 @@ def push_payload(item: dict[str, Any], *, tier: str, test: bool = False) -> dict
         }
     item_id = str(item.get("item_id") or "")
     model = str(item.get("model") or "iPhone opportunity")
-    issue = str(
-        item.get("principal_damage")
-        or item.get("damage_summary")
-        or item.get("manual_review_reason")
-        or ", ".join((item.get("positive_flags") or [])[:2])
-        or "repair opportunity"
-    ).replace("_", " ")
-    profit = float(item.get("profit_mid") or item.get("expected_profit") or 0)
     total = float(item.get("total_cost") or item.get("price") or 0)
     repair = float(item.get("estimated_parts_cost") or 0)
     resale = float(item.get("resale_mid") or item.get("resale_value") or 0)
-    confidence = str(item.get("resale_confidence") or item.get("confidence") or "unknown")
-    freshness = str(item.get("freshness_label") or item.get("listing_age_label") or "fresh")
-    display_tier = "BEST FIND" if tier in {"GEM", "PROFITABLE"} else "REVIEW"
-    title = f"{display_tier}: {model} · {issue}"
-    body = (
-        f"Buy ${total:,.0f} · repair ${repair:,.0f} · resale ${resale:,.0f} · "
-        f"profit ${profit:,.0f} · {confidence} confidence · {freshness}"
-    )
+    profit = float(item.get("profit_mid") or item.get("estimated_profit") or 0)
+    age_minutes = item.get("item_age_minutes")
+    if isinstance(age_minutes, (int, float)):
+        if age_minutes < 1:
+            age = "just now"
+        elif age_minutes < 60:
+            age = f"{int(age_minutes)}m ago"
+        elif age_minutes < 24 * 60:
+            age = f"{int(age_minutes // 60)}h ago"
+        else:
+            age = f"{int(age_minutes // (24 * 60))}d ago"
+    else:
+        age = str(item.get("item_age_label") or item.get("listing_age_label") or item.get("freshness_label") or "Just listed")
+    issue = str(
+        item.get("principal_damage")
+        or item.get("damage_summary")
+        or next((flag for flag in (item.get("positive_flags") or []) if flag in {
+            "cracked_screen", "back_glass_cracked", "bad_battery", "screen_display_issue",
+            "charging_port_issue", "camera_lens_cracked",
+        }), "")
+        or "repair opportunity"
+    ).replace("_", " ").strip().capitalize()
+    tier_label = {"GEM": "GEM", "PROFITABLE": "PROFITABLE", "REVIEW": "REVIEW"}.get(str(tier).upper(), str(tier).upper())
+    profit_label = f"+${profit:,.0f}" if profit >= 0 else f"-${abs(profit):,.0f}"
+    title = f"{model} · ${total:,.0f} · {profit_label} projected"
+    body_parts = [tier_label, issue]
+    if repair > 0:
+        body_parts.append(f"repair ${repair:,.0f}")
+    if resale > 0:
+        body_parts.append(f"resale ${resale:,.0f}")
+    body_parts.append(age)
     return {
         "title": title[:120],
-        "body": body[:240],
+        "body": " · ".join(body_parts)[:240],
         "url": f"/?item={quote(item_id)}",
         "tag": f"notifierr-{item_id or tier.lower()}",
         "tier": tier,
