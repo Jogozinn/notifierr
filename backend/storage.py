@@ -4654,9 +4654,16 @@ class Storage:
         source_cutoff = None
         if source_max_age_hours is not None:
             source_cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(source_max_age_hours)))).isoformat()
+        where_clauses = ["uis.user_id = ?"]
+        params: list[Any] = [user_id]
+        if source_cutoff is not None:
+            # Dashboard timestamps are canonical UTC ISO text in both backends.
+            # The explicit cast gives PostgreSQL a type without a nullable bind.
+            where_clauses.append("COALESCE(mi.item_origin_at, mi.found_at) >= CAST(? AS TEXT)")
+            params.append(source_cutoff)
         with self.connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT
                     mi.marketplace_item_id AS item_id,
                     mi.item_origin_at AS item_origin_at,
@@ -4713,10 +4720,9 @@ class Storage:
                     mi.last_availability_checked_at AS last_availability_checked_at
                 FROM user_item_states uis
                 INNER JOIN marketplace_items mi ON mi.id = uis.marketplace_item_id
-                WHERE uis.user_id = ?
-                  AND (? IS NULL OR COALESCE(mi.item_origin_at, mi.found_at) >= ?)
+                WHERE {' AND '.join(where_clauses)}
                 """,
-                (user_id, source_cutoff, source_cutoff),
+                params,
             ).fetchall()
         items = [
             _row_to_dict(
