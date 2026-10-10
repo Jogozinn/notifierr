@@ -129,7 +129,17 @@ def diagnose_listing(item: dict[str, Any]) -> dict[str, Any]:
         "classification_flags": sorted(flags),
         "hard_reject_flags": sorted(hard_flags),
         "positive_flags": list(item.get("positive_flags") or []),
-        "description_available": bool(str(item.get("raw_description") or "").strip()),
+        "description_available": (
+            bool(item["has_raw_description"])
+            if item.get("has_raw_description") is not None
+            else bool(str(item.get("raw_description") or "").strip())
+        ),
+        "detail_fetch_status": str(item.get("detail_fetch_status") or "not_requested"),
+        "detail_fetch_reason": str(item.get("detail_fetch_reason") or ""),
+        "detail_fetch_attempted_at": item.get("detail_fetch_attempted_at"),
+        "detail_fetch_recovered_fields": list(item.get("detail_fetch_recovered_fields") or []),
+        "detail_fetch_failure_reason": str(item.get("detail_fetch_failure_reason") or ""),
+        "detail_fetch_retry_after": item.get("detail_fetch_retry_after"),
         "pricing_version": {
             "scorer_hash": item.get("scorer_hash"),
             "rules_hash": item.get("rules_hash"),
@@ -148,6 +158,8 @@ def summarize_needs_data(
     gates = Counter(d["primary_gate"] for d in diagnosed)
     reasons = Counter(reason for d in diagnosed for reason in d["observed_reasons"])
     valuation = Counter(d["resale_block_origin"] for d in diagnosed if d["resale_block_origin"])
+    fetch_statuses = Counter(d["detail_fetch_status"] for d in diagnosed)
+    with_description = sum(1 for d in diagnosed if d["description_available"])
     return {
         "scope": "user_scoped_current_needs_data_queue",
         "read_only": True,
@@ -161,6 +173,8 @@ def summarize_needs_data(
         "primary_gate_counts": dict(sorted(gates.items())),
         "observed_reason_counts": dict(sorted(reasons.items())),
         "resale_block_origins": dict(sorted(valuation.items())),
+        "persisted_description_present": with_description,
+        "detail_fetch_status_counts": dict(sorted(fetch_statuses.items())),
         "records": selected,
         "caveats": [
             "A stage is a diagnostic first gate, not evidence a phone is profitable or safe.",

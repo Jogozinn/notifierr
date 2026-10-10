@@ -79,6 +79,10 @@ def evaluate_alert_decision(item: dict[str, Any], result: Any, current_settings:
         blocking.append("LISTING_TOO_OLD")
     if item.get("user_status") in {"ignored", "rejected"}:
         blocking.append(f"USER_{str(item.get('user_status')).upper()}")
+    if ("research_ambiguous_handset" in str(item.get("detail_fetch_reason") or "")
+            and item.get("user_status") not in {"reviewed", "watched", "promoted"}):
+        # Research-only detail enrichment must not itself trigger a purchase alert.
+        blocking.append("RESEARCH_ENRICHMENT_REQUIRES_REVIEW")
     score = float(item.get("score") or getattr(result, "score", 0) or 0)
     min_score = float(getattr(current_settings, "min_score_to_alert", 70) or 70)
     if score < min_score:

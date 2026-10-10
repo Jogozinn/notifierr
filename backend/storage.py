@@ -3296,6 +3296,7 @@ class Storage:
             clauses.append("COALESCE(mi.item_origin_at, mi.found_at) >= ?")
             params.append(active_cutoff)
         raw_description_select = "NULL AS raw_description" if lightweight else "mi.raw_description AS raw_description"
+        # Lightweight diagnostics must know whether persisted evidence exists without loading its text.
         raw_json_select = "'{}' AS raw_json" if lightweight else "mi.raw_json AS raw_json"
         with self.connect() as connection:
             rows = connection.execute(
@@ -3314,6 +3315,7 @@ class Storage:
                     mi.seller_feedback_percentage AS seller_feedback_percentage,
                     mi.seller_feedback_score AS seller_feedback_score,
                     {raw_description_select},
+                    CASE WHEN mi.raw_description IS NOT NULL AND TRIM(mi.raw_description) <> '' THEN 1 ELSE 0 END AS has_raw_description,
                     {raw_json_select},
                     mi.item_origin_at AS item_origin_at,
                     mi.marketplace_origin_at AS marketplace_origin_at,
@@ -4794,6 +4796,23 @@ class Storage:
                 return
             merged = {**dict(current), **fields, "item_id": item_id}
             self._upsert_marketplace_item(connection, merged, marketplace=marketplace, now=now_iso())
+
+    def research_detail_attempts_today(self, *, now: datetime | None = None) -> int:
+        """Global persistent daily quota shared by scanner/manual workers.
+
+        Count attempted research details, including failures. Storage already has
+        the eBay detail audit fields, so no schema migration is required.
+        """
+        day = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date().isoformat()
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT COUNT(*) AS attempted FROM marketplace_items
+                WHERE detail_fetch_attempted_at >= ?
+                  AND detail_fetch_attempted_at < ?
+                  AND detail_fetch_reason LIKE ?""",
+                (f"{day}T00:00:00", f"{day}T23:59:59.999999999+00:00", "%research_ambiguous_handset%"),
+            ).fetchone()
+        return int(row["attempted"] if row else 0)
 
     def get_marketplace_item(self, item_id: str, *, marketplace: str = "ebay") -> Optional[dict[str, Any]]:
         with self.connect() as connection:

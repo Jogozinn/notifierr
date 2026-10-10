@@ -89,6 +89,7 @@ BACKGROUND_LEASE_TTL_SECONDS = 180
 BACKGROUND_LEASE_RENEW_SECONDS = 60
 SCAN_WORKER_CANCEL_WAIT_SECONDS = 30
 MAX_DETAIL_REFRESHES_PER_SCAN = 15
+MAX_RESEARCH_DETAIL_REFRESHES_PER_SCAN = 2  # additional hard safety ceiling
 _background_leadership_acquired_at: Optional[str] = None
 _background_leadership_lost_at: Optional[str] = None
 
@@ -5481,6 +5482,7 @@ async def _scan_once_unlocked(
     alerts_sent = 0
     duplicates_skipped = 0
     detail_refresh_attempts = 0
+    research_remaining = _research_quota_for_scan()
     counters = ScanCycleCounters()
 
     for listing in listings:
@@ -5497,8 +5499,18 @@ async def _scan_once_unlocked(
             pricing_context=pricing_context,
         )
         detail_reasons = _detail_refresh_reasons(listing, result, resolved)
-        if detail_reasons and detail_refresh_attempts < MAX_DETAIL_REFRESHES_PER_SCAN:
-            detail_refresh_attempts += 1
+        research_only = False
+        if not detail_reasons and research_remaining:
+            existing_market = storage.get_marketplace_item(str(listing.get("item_id") or ""))
+            detail_reasons = _research_detail_reasons(
+                listing, result, pricing_context.resale_research, existing=existing_market,
+            )
+            if detail_reasons:
+                research_only = True
+                research_remaining -= 1
+        if detail_reasons and (research_only or detail_refresh_attempts < MAX_DETAIL_REFRESHES_PER_SCAN):
+            if not research_only:
+                detail_refresh_attempts += 1
             detail_requested_at = _utc_now_iso()
             detailed_listing = await _fetch_selective_detail(ebay, listing)
             if detailed_listing:
@@ -5525,11 +5537,12 @@ async def _scan_once_unlocked(
                     "detail_fetch_reason": ",".join(detail_reasons),
                     "detail_fetch_recovered_fields": [],
                     "detail_fetch_failure_reason": "detail_unavailable_or_transient_failure",
-                    "detail_fetch_retry_after": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+                    "detail_fetch_retry_after": (datetime.now(timezone.utc) + timedelta(hours=24 if research_only else 0, minutes=0 if research_only else 30)).isoformat(),
                 })
         item = {**listing, **result.as_item_fields(), **identity, "_scored_for_user": True}
         item.update(_repair_snapshot_for_item(item, user_id=int(resolved.user["id"]), pricing_context=pricing_context, correction=_item_overrides["correction"]))
         item = _apply_availability_and_auction_policy(item)
+        _hold_research_enrichment_for_review(item)
         ignored = storage.ignored_match(listing, user_id=int(resolved.user["id"]))
         if ignored:
             item.update(ignored)
@@ -5884,6 +5897,7 @@ async def _scan_shared_once_unlocked(
     rejected = 0
     counters = ScanCycleCounters()
     detail_refresh_attempts = 0
+    research_remaining = _research_quota_for_scan()
 
     try:
         for entry in plan:
@@ -5964,6 +5978,7 @@ async def _scan_shared_once_unlocked(
                         **dict(listing),
                         "_notifierr_already_seen": already_seen,
                         "_notifierr_market_changed": market_changed,
+                        "_notifierr_existing_market": existing_market,
                     }
                 else:
                     search_metrics[search_id]["duplicate_items"] += 1
@@ -5985,6 +6000,13 @@ async def _scan_shared_once_unlocked(
                 continue
             already_seen = bool(listing.pop("_notifierr_already_seen", False))
             market_changed = bool(listing.pop("_notifierr_market_changed", False))
+            existing_market = listing.pop("_notifierr_existing_market", None) or {}
+            candidate_for_research = bool(
+                research_remaining and not existing_market.get("raw_description")
+                and existing_market.get("detail_fetch_status") != "succeeded"
+                and "iphone" in str(listing.get("title") or "").lower()
+                and str(listing.get("availability_status") or "").lower() not in {"sold", "ended", "unavailable"}
+            )
             if already_seen and not market_changed:
                 users_needing_rescore = []
                 for resolved in subscribed_users:
@@ -6005,13 +6027,15 @@ async def _scan_shared_once_unlocked(
                         identity_cache[user_id] = current_identity
                     if any(stored_identity.get(key) != current_identity.get(key) for key in current_identity):
                         users_needing_rescore.append(resolved)
-                if not users_needing_rescore:
+                if not users_needing_rescore and not candidate_for_research:
                     duplicates_not_rescored += 1
                     continue
-                subscribed_users = users_needing_rescore
+                if users_needing_rescore:
+                    subscribed_users = users_needing_rescore
             initial_results: dict[int, Any] = {}
             should_fetch_detail = False
             detail_fetch_succeeded = False
+            research_only = False
             detail_reasons: list[str] = []
             for resolved in subscribed_users:
                 pricing_context = _pricing_context_for_user(int(resolved.user["id"]), pricing_context_cache)
@@ -6025,8 +6049,27 @@ async def _scan_shared_once_unlocked(
                 if user_detail_reasons:
                     should_fetch_detail = True
                     detail_reasons.extend(user_detail_reasons)
-            if should_fetch_detail and detail_refresh_attempts < MAX_DETAIL_REFRESHES_PER_SCAN:
-                detail_refresh_attempts += 1
+                if not should_fetch_detail and research_remaining and not research_only:
+                    research_reasons = _research_detail_reasons(
+                        listing, result, pricing_context.resale_research, existing=existing_market,
+                    )
+                    if research_reasons:
+                        research_only = True
+                        detail_reasons.extend(research_reasons)
+            if should_fetch_detail and research_only:
+                # Normal detail recovery takes precedence; don't mark it research-only.
+                research_only = False
+                detail_reasons = [r for r in detail_reasons if r != "research_ambiguous_handset"]
+            if already_seen and not market_changed and not should_fetch_detail and not research_only:
+                # Probing an unchanged duplicate for research must not turn into a normal rescore.
+                if all(storage.user_item_state_identity(int(r.user["id"]), item_id) is not None for r in subscribed_users):
+                    duplicates_not_rescored += 1
+                    continue
+            if research_only and not should_fetch_detail:
+                research_remaining -= 1
+            if detail_reasons and ((should_fetch_detail and detail_refresh_attempts < MAX_DETAIL_REFRESHES_PER_SCAN) or research_only):
+                if not research_only:
+                    detail_refresh_attempts += 1
                 for search_id in item_search_ids.get(item_id, set()):
                     search_metrics[search_id]["detail_attempts"].add(item_id)
                 detail_requested_at = _utc_now_iso()
@@ -6057,7 +6100,7 @@ async def _scan_shared_once_unlocked(
                         "detail_fetch_reason": ",".join(dict.fromkeys(detail_reasons)),
                         "detail_fetch_recovered_fields": [],
                         "detail_fetch_failure_reason": "detail_unavailable_or_transient_failure",
-                        "detail_fetch_retry_after": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+                        "detail_fetch_retry_after": (datetime.now(timezone.utc) + timedelta(hours=24 if research_only else 0, minutes=0 if research_only else 30)).isoformat(),
                     })
             storage.upsert_marketplace_item(listing)
             for resolved in subscribed_users:
@@ -6078,6 +6121,7 @@ async def _scan_shared_once_unlocked(
                 item = {**listing, **result.as_item_fields(), **identity_cache[user_id], "_scored_for_user": True}
                 item.update(_repair_snapshot_for_item(item, user_id=user_id, pricing_context=pricing_context, correction=item_overrides["correction"]))
                 item = _apply_availability_and_auction_policy(item)
+                _hold_research_enrichment_for_review(item)
                 ignored = storage.ignored_match(listing, user_id=user_id)
                 if ignored:
                     item.update(ignored)
@@ -7610,6 +7654,67 @@ def _detail_refresh_reasons(listing: dict[str, Any], result: Any, current_settin
     if (close_score or close_profit) and not reasons:
         reasons.append("near_alert_threshold")
     return list(dict.fromkeys(reasons))
+
+
+def _research_detail_reasons(
+    listing: dict[str, Any], result: Any, resale_baseline: dict[str, Any],
+    *, existing: dict[str, Any] | None = None, now: datetime | None = None,
+) -> list[str]:
+    """Evidence-only shortlist. Never lowers any scoring or alert gate."""
+    current = now or datetime.now(timezone.utc)
+    existing = existing or {}
+    if (existing.get("detail_fetch_status") or "not_requested") == "succeeded":
+        return []
+    if str(existing.get("raw_description") or listing.get("raw_description") or "").strip():
+        return []
+    last = _parse_utc_datetime(str(existing.get("detail_fetch_attempted_at") or ""))
+    if last and (current - last).total_seconds() < 24 * 3600:
+        return []
+    retry_after = _parse_utc_datetime(str(existing.get("detail_fetch_retry_after") or ""))
+    if retry_after and current < retry_after:
+        return []
+    if str(listing.get("availability_status") or "").lower() in {"sold", "ended", "unavailable"}:
+        return []
+    origin = _parse_utc_datetime(str(listing.get("item_origin_at") or listing.get("found_at") or ""))
+    if origin is None or (current - origin).total_seconds() > 36 * 3600 or origin > current + timedelta(minutes=10):
+        return []
+    if getattr(result, "item_type", "ambiguous") != "ambiguous":
+        return []
+    if getattr(result, "whole_phone_confidence_passed", False):
+        return []
+    if getattr(result, "hard_reject_flags", []) or getattr(result, "suppress_flags", []):
+        return []
+    classification_flags = set(getattr(result, "listing_classification_flags", []) or [])
+    if any(flag.endswith("_not_phone") or flag in {"motherboard", "housing_not_phone"} for flag in classification_flags):
+        return []
+    model = str(getattr(result, "model", "unknown") or "unknown")
+    storage_capacity = str(getattr(result, "storage_capacity", "") or "")
+    model_prices = resale_baseline.get(model) or {}
+    if not storage_capacity or storage_capacity not in (model_prices.get("resale_by_storage") or {}):
+        return []
+    return ["research_ambiguous_handset", "description_missing"]
+
+
+def _hold_research_enrichment_for_review(item: dict[str, Any]) -> None:
+    """Do not auto-promote a handset just because a research detail request worked."""
+    if "research_ambiguous_handset" not in str(item.get("detail_fetch_reason") or ""):
+        return
+    if item.get("status") == "candidate":
+        item["status"] = "risky"
+    item["alert_eligible"] = False
+    item["manual_review_needed"] = True
+    note = str(item.get("manual_review_reason") or "")
+    warning = "Research detail enriched - verify actual handset and defects"
+    item["manual_review_reason"] = note if warning in note else "; ".join(x for x in (note, warning) if x)
+
+
+def _research_quota_for_scan() -> int:
+    per_scan = min(MAX_RESEARCH_DETAIL_REFRESHES_PER_SCAN, max(0, int(getattr(settings, "research_detail_per_scan", 1))))
+    daily = max(0, int(getattr(settings, "research_detail_daily_limit", 24)))
+    if not per_scan or not daily:
+        return 0
+    count = getattr(storage, "research_detail_attempts_today", lambda: 0)()
+    return min(per_scan, max(0, daily - count))
 
 
 def _detail_fetch_fields(before: dict[str, Any], after: dict[str, Any]) -> list[str]:

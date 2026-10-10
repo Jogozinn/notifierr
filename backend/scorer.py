@@ -51,10 +51,10 @@ POSITIVE_PATTERNS = {
     "screen_display_issue": r"\b(?:bad\s+screen|screen\s+bad|screen\s+lines|vertical\s+lines|black\s+spot|no\s+image|no\s+display|black\s+screen|bad\s+lcd|damaged\s+lcd|lcd\s+screen(?:\s+damaged)?|screen\s+has\s+lines|display\s+lines)\b",
     "bad_battery": r"\bbad\s+battery\b|\bswollen\s+battery\b|\bbattery\s+(?:service|needs\s+replacement|issue)\b|\bbattery\s+needs\s+to\s+be\s+serviced\b",
     "back_glass_cracked": r"\bback\s+glass\s+cracked\b|\bcracked\s+back\s+glass\b|\bcracked\s+back\b",
-    "camera_lens_cracked": r"\bcamera\s+lens\s+cracked\b|\bcracked\s+camera\s+lens\b",
+    "camera_lens_cracked": r"\bcamera\s+lens\s+cracked\b|\bcracked\s+camera\s+lens\b|\b(?:camera\s+glass|camera\s+lens)\s+(?:broken|cracked)\b|\bbroken\s+(?:camera\s+glass|camera\s+lens)\b",
     "charging_port_issue": r"\b(?:charging|charge)(?:\s+port)?\s+(?:issue|problem|bad|broken|fault)\b|\b(?:does\s+not|doesn'?t|won'?t)\s+charge\b",
-    "camera_fault": r"\b(?:front|rear|main|selfie)?\s*camera\s+(?:issue|problem|bad|broken|fault|not\s+working|doesn'?t\s+work)\b",
-    "face_id_issue": r"\bface\s*id\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b",
+    "camera_fault": r"\b(?:front|rear|main|selfie)?\s*camera\s+(?:issue|problem|bad|broken|fault|not\s+working|doesn'?t\s+work)\b|\bbad\s+(?:(?:front|rear|main|selfie)\s+)?camera\b",
+    "face_id_issue": r"\bface\s*id\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b|\bbad\s+face\s*id\b",
     "digitizer_issue": r"\b(?:touch|digitizer)\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|unresponsive)\b",
     "bad_oled": r"\bbad\s+oled\b",
     "powers_on": r"\bpowers?\s+on\b|\bturns?\s+on\b|\bboots?\b|\bphone\s+works\b|\bdoes\s+still\s+work\b",
@@ -1052,8 +1052,8 @@ def _repair_detail_signals(text: str) -> list[str]:
         "non_oem_screen": r"\bnon[-\s]?oem\s+screen\b|\bnon\s+apple\s+screen\b",
         "deep_scratches": r"\bdeep\s+scratches\b|\bscratches\s+are\s+semi\s+deep\b",
         "charging_port_issue": r"\b(?:charging|charge)(?:\s+port)?\s+(?:issue|problem|bad|broken|fault)\b|\b(?:does\s+not|doesn'?t|won'?t)\s+charge\b",
-        "camera_fault": r"\b(?:front|rear|main|selfie)?\s*camera\s+(?:issue|problem|bad|broken|fault|not\s+working|doesn'?t\s+work)\b",
-        "face_id_issue": r"\bface\s*id\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b",
+        "camera_fault": r"\b(?:front|rear|main|selfie)?\s*camera\s+(?:issue|problem|bad|broken|fault|not\s+working|doesn'?t\s+work)\b|\bbad\s+(?:(?:front|rear|main|selfie)\s+)?camera\b",
+        "face_id_issue": r"\bface\s*id\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|fail(?:ed|s)?)\b|\bbad\s+face\s*id\b",
         "digitizer_issue": r"\b(?:touch|digitizer)\s+(?:issue|problem|not\s+working|does\s+not\s+work|doesn'?t\s+work|broken|unresponsive)\b",
         "swollen_battery": r"\bswollen\s+battery\b",
         "no_ic_read": r"\bno\s+ic\s+read\b",
@@ -1242,6 +1242,11 @@ def _clear_handset_evidence(
     if CLEAR_HANDSET_DAMAGE_PATTERN.search(title):
         return True
     if re.search(r"\biphone\b.*\bas[\s-]?is\b.*\bread\s+description\b", title, re.I):
+        return True
+    # A clearly described handset that fully works is stronger evidence than
+    # a bare model number. Component titles are rejected before this step.
+    if (IPHONE_TITLE_PATTERN.search(title) and STORAGE_PATTERN.search(title)
+            and re.search(r"\b(?:fully\s+(?:working|works|functional)|everything\s+works|works\s+perfectly)\b", title, re.I)):
         return True
     if (PARTS_ONLY_PATTERN.search(title) and STORAGE_PATTERN.search(title)
             and CARRIER_PATTERN.search(title) and re.search(r"\bread\s+description\b", title, re.I)):

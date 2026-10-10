@@ -102,6 +102,8 @@ class Settings:
     ebay_api_base: str = "https://api.ebay.com"
     ebay_oauth_url: str = "https://api.ebay.com/identity/v1/oauth2/token"
     ebay_fetch_descriptions: bool = False
+    research_detail_per_scan: int = 1
+    research_detail_daily_limit: int = 24
     ebay_rate_limit_backoff_seconds: int = 900
     discord_webhook_url: Optional[str] = None
     vapid_public_key: Optional[str] = None
@@ -166,6 +168,8 @@ class Settings:
             "push_configured": self.push_configured,
             "ebay_marketplace_id": self.ebay_marketplace_id,
             "ebay_fetch_descriptions": self.ebay_fetch_descriptions,
+            "research_detail_per_scan": self.research_detail_per_scan,
+            "research_detail_daily_limit": self.research_detail_daily_limit,
             "ebay_rate_limit_backoff_seconds": self.ebay_rate_limit_backoff_seconds,
             "sqlite_path": str(self.sqlite_path),
             "repair_values_path": str(self.repair_values_path),
@@ -222,6 +226,8 @@ def load_settings() -> Settings:
             "https://api.ebay.com/identity/v1/oauth2/token",
         ),
         ebay_fetch_descriptions=_env_bool("EBAY_FETCH_DESCRIPTIONS", False),
+        research_detail_per_scan=max(0, min(2, _env_int("RESEARCH_DETAIL_PER_SCAN", 1))),
+        research_detail_daily_limit=max(0, min(48, _env_int("RESEARCH_DETAIL_DAILY_LIMIT", 24))),
         ebay_rate_limit_backoff_seconds=_env_int("EBAY_RATE_LIMIT_BACKOFF_SECONDS", 900),
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
         vapid_public_key=os.getenv("VAPID_PUBLIC_KEY") or None,
