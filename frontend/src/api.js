@@ -72,6 +72,11 @@ export function clearStoredToken() {
   window.localStorage.removeItem(TOKEN_KEY);
 }
 
+// On-demand deep audit only. This is intentionally not part of dashboard startup.
+export function getNeedsDataDiagnostics(limit = 500) {
+  return request(`/items/dashboard/needs-data/diagnostics?limit=${Math.max(1, Math.min(500, Number(limit) || 500))}`);
+}
+
 export function getAuthStatus() {
   return request("/auth/status");
 }

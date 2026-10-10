@@ -37,6 +37,7 @@ from .db import create_storage
 from .ebay_client import EbayClient, EbayRateLimitError
 from .notifier import DiscordNotifier
 from .notification_delivery import destination_identity, notification_snapshot, successful_dedupe_reason
+from .needs_data_diagnostics import decision_consistency_scan, summarize_needs_data
 from .push import endpoint_hash, push_destination_identity, send_push_to_user
 from .polling import (
     MIN_POLL_SECONDS, consecutive_cycle_outcomes, resolve_poll_interval,
@@ -4824,6 +4825,46 @@ def _dashboard_counts_response(payload: dict[str, Any], include_secondary: bool)
             for key in ("high_quality", "profitable", "review", "actionable")
         }
     return response
+
+
+@app.get("/items/dashboard/needs-data/diagnostics")
+def dashboard_needs_data_diagnostics(
+    limit: int = Query(default=500, ge=1, le=500),
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    """Explicit, read-only export of the current Needs Data decision gates.
+
+    Not called during normal dashboard rendering.  Mirrors the dashboard's
+    user, freshness and queue predicates and never rescans/rescores listings.
+    """
+    user_id = int(user["id"])
+    hot_hours = max(1, int(settings.dashboard_hot_hours))
+    source_cap = 1500
+    rows = storage.list_user_items(
+        user_id,
+        limit=source_cap,
+        include_ignored=True,
+        include_stale=False,
+        lightweight=True,
+        source_max_age_hours=hot_hours,
+        **_dashboard_freshness_kwargs(user_id),
+    )
+    decorated = _decorate_dashboard_items(user, rows)
+    selected = [
+        item for item in decorated
+        if _dashboard_visible_in_queue(
+            item, "needs_data", include_ignored=False, include_stale=False,
+        )
+    ]
+    report = summarize_needs_data(
+        selected,
+        limit=limit,
+        source_rows=len(rows),
+        source_truncated=len(rows) >= source_cap,
+        hot_hours=hot_hours,
+    )
+    report["cross_queue_consistency"] = decision_consistency_scan(decorated)
+    return report
 
 
 @app.get("/items/dashboard/preview")
