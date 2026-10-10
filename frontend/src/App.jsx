@@ -9,8 +9,10 @@ import {
   deleteUserKeyword,
   getAuthStatus,
   getCurrentUser,
+  getDashboardCounts,
   getDashboardItems,
   getDashboardChanges,
+  getDashboardPreview,
   getItemDetail,
   getPollingStatus,
   getUserKeywords,
@@ -43,11 +45,14 @@ import {
 import AdminPanel from "./components/AdminPanel.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import ItemTable from "./components/ItemTable.jsx";
+import OpportunityDetail from "./components/OpportunityDetail.jsx";
 import PushSettings from "./components/PushSettings.jsx";
 import { shouldRefreshDashboard } from "./autoscanStatus.js";
 import { notificationStatus } from "./notificationStatus.js";
+import { dashboardPathWithoutDeepLink, itemIdFromSearch } from "./notificationRoute.js";
 
 const TABS = {
+  actionable: "Actionable opportunities",
   high_quality: "GEM",
   profitable: "PROFITABLE",
   review: "REVIEW",
@@ -64,7 +69,8 @@ const TABS = {
 
 const PRIORITY_REVIEW_MIN_PROFIT = 37.5;
 const PRIORITY_REVIEW_UPSIDE = 75;
-const DASHBOARD_PAGE_SIZE = 50;
+const DASHBOARD_PAGE_SIZE = 20;
+const DASHBOARD_PREVIEW_SIZE = 12;
 const REVIEWABLE_PRICING_REASONS = [
   "Expected profit below threshold",
   "Only upside case works",
@@ -79,14 +85,18 @@ const REVIEWABLE_PRICING_REASONS = [
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("priority_review");
-  const [userSelectedTab, setUserSelectedTab] = useState(false);
+  const [activeTab, setActiveTab] = useState("actionable");
   const [stats, setStats] = useState(null);
   const [pollingStatus, setPollingStatus] = useState(null);
   const lastBackgroundCycleRef = useRef(null);
   const [items, setItems] = useState([]);
   const [dashboardCounts, setDashboardCounts] = useState({});
+  const [countsComputedAt, setCountsComputedAt] = useState("");
+  const [countsLoading, setCountsLoading] = useState(false);
+  const [countsError, setCountsError] = useState("");
   const [dashboardTotal, setDashboardTotal] = useState(0);
+  const [pageHasMore, setPageHasMore] = useState(false);
+  const [previewMode, setPreviewMode] = useState(true);
   const [pageOffset, setPageOffset] = useState(0);
   const [authLoading, setAuthLoading] = useState(true);
   const [authRequired, setAuthRequired] = useState(false);
@@ -130,17 +140,20 @@ export default function App() {
   const [keyword, setKeyword] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [deepLinkedItemId, setDeepLinkedItemId] = useState(() => itemIdFromSearch(window.location.search));
+  const [detailItem, setDetailItem] = useState(null);
+  const [detailState, setDetailState] = useState("loading");
+  const [detailError, setDetailError] = useState("");
   const dashboardRequestRef = useRef(0);
+  const dashboardCountsRequestRef = useRef(0);
+  const dashboardCountsPromiseRef = useRef(null);
+  const secondaryLoadedForRef = useRef(null);
   const dashboardWatermarkRef = useRef("");
 
   useEffect(() => {
-    const linkedItem = new URLSearchParams(window.location.search).get("item");
-    if (linkedItem) {
-      setActiveTab("all");
-      setUserSelectedTab(true);
-      setIncludeStale(true);
-      setSearchText(linkedItem);
-    }
+    const updateRoute = () => setDeepLinkedItemId(itemIdFromSearch(window.location.search));
+    window.addEventListener("popstate", updateRoute);
+    return () => window.removeEventListener("popstate", updateRoute);
   }, []);
 
   useEffect(() => {
@@ -168,7 +181,7 @@ export default function App() {
     setAuthUser(status?.current_user || null);
   }, []);
 
-  const loadDashboard = useCallback(async (options = {}) => {
+  const loadDashboardPage = useCallback(async (options = {}) => {
     const { background = false } = options;
     const requestId = dashboardRequestRef.current + 1;
     dashboardRequestRef.current = requestId;
@@ -179,9 +192,9 @@ export default function App() {
       setLoading(true);
     }
     try {
-      const [nextStats, nextPage] = await Promise.all([
-        getStats(),
-        getDashboardItems({
+      const nextPage = previewMode
+        ? await getDashboardPreview({ limit: DASHBOARD_PREVIEW_SIZE })
+        : await getDashboardItems({
           queue: activeTab,
           sort: sortBy,
           search: debouncedSearch,
@@ -189,19 +202,18 @@ export default function App() {
           limit: DASHBOARD_PAGE_SIZE,
           includeIgnored: includeIgnored || activeTab === "ignored",
           includeStale,
-        }),
-      ]);
+        });
       if (dashboardRequestRef.current !== requestId) {
         return;
       }
-      setStats(nextStats);
       setItems(nextPage.items);
-      setDashboardCounts(nextPage.counts);
-      setDashboardTotal(nextPage.total);
+      setDashboardTotal(nextPage.total ?? nextPage.items.length);
+      setPageHasMore(Boolean(nextPage.has_more) || Number(nextPage.total || 0) > DASHBOARD_PAGE_SIZE);
       if (nextPage.watermark) dashboardWatermarkRef.current = nextPage.watermark;
-      if (pageOffset > 0 && pageOffset >= nextPage.total) {
+      if (!previewMode && pageOffset > 0 && pageOffset >= nextPage.total) {
         setPageOffset(Math.max(0, Math.floor((nextPage.total - 1) / DASHBOARD_PAGE_SIZE) * DASHBOARD_PAGE_SIZE));
       }
+      return nextPage;
     } catch (err) {
       if (dashboardRequestRef.current !== requestId) {
         return;
@@ -220,7 +232,64 @@ export default function App() {
         }
       }
     }
-  }, [activeTab, debouncedSearch, handleAuthRequired, includeIgnored, includeStale, pageOffset, sortBy]);
+  }, [activeTab, debouncedSearch, handleAuthRequired, includeIgnored, includeStale, pageOffset, previewMode, sortBy]);
+
+  const dashboardCacheIdentity = authUser?.id ? String(authUser.id) : (!authRequired ? "local" : "");
+
+  const loadDashboardCounts = useCallback(async ({ force = false, deferSecondary = false } = {}) => {
+    if (dashboardCountsPromiseRef.current && !force && !deferSecondary) {
+      return dashboardCountsPromiseRef.current;
+    }
+    const requestId = dashboardCountsRequestRef.current + 1;
+    dashboardCountsRequestRef.current = requestId;
+    setCountsLoading(true);
+    setCountsError("");
+    const promise = (async () => {
+      try {
+        const result = await getDashboardCounts({ includeSecondary: true });
+        if (dashboardCountsRequestRef.current !== requestId) return;
+        const primaryKeys = ["high_quality", "profitable", "review", "actionable"];
+        const displayedCounts = deferSecondary
+          ? Object.fromEntries(primaryKeys.map((key) => [key, result.counts?.[key] ?? 0]))
+          : result.counts || {};
+        setDashboardCounts((current) => ({ ...current, ...displayedCounts }));
+        setCountsComputedAt(result.computed_at || "");
+        if (dashboardCacheIdentity) {
+          let previous = {};
+          try { previous = JSON.parse(window.localStorage.getItem(`notifierr_dashboard_counts_${dashboardCacheIdentity}`) || "{}"); } catch { /* Replace invalid cache. */ }
+          window.localStorage.setItem(`notifierr_dashboard_counts_${dashboardCacheIdentity}`, JSON.stringify({
+            counts: { ...(previous.counts || {}), ...(result.counts || {}) },
+            computed_at: result.computed_at || "",
+          }));
+        }
+        return result;
+      } catch (err) {
+        if (dashboardCountsRequestRef.current !== requestId) return;
+        if (err.status === 401) handleAuthRequired();
+        else setCountsError(err.message);
+      } finally {
+        if (dashboardCountsRequestRef.current === requestId) setCountsLoading(false);
+      }
+    })();
+    dashboardCountsPromiseRef.current = promise;
+    try {
+      return await promise;
+    } finally {
+      if (dashboardCountsPromiseRef.current === promise) dashboardCountsPromiseRef.current = null;
+    }
+  }, [dashboardCacheIdentity, handleAuthRequired]);
+
+  const loadDashboard = useCallback(async (options = {}) => {
+    const pagePromise = loadDashboardPage(options);
+    void loadDashboardCounts({ force: true });
+    const page = await pagePromise;
+    if (page) {
+      void getStats().then(setStats).catch((err) => {
+        if (err.status === 401) handleAuthRequired();
+      });
+    }
+    return page;
+  }, [handleAuthRequired, loadDashboardCounts, loadDashboardPage]);
 
   const loadSettingsPanel = useCallback(async () => {
     setError("");
@@ -299,8 +368,59 @@ export default function App() {
     if (authLoading || (authRequired && !authUser)) {
       return;
     }
-    loadDashboard();
-  }, [authLoading, authRequired, authUser, loadDashboard]);
+    if (deepLinkedItemId) return;
+    void loadDashboardPage();
+  }, [authLoading, authRequired, authUser, deepLinkedItemId, loadDashboardPage]);
+
+  useEffect(() => {
+    if (authLoading || (authRequired && !authUser) || deepLinkedItemId) return undefined;
+    const primaryCountsPromise = loadDashboardCounts({ force: true, deferSecondary: true });
+    let cancelled = false;
+    const secondaryTimer = window.setTimeout(async () => {
+      if (cancelled) return;
+      const primaryResult = await primaryCountsPromise;
+      if (!cancelled && primaryResult?.counts) {
+        setDashboardCounts((current) => ({ ...current, ...primaryResult.counts }));
+      }
+      void getStats().then((result) => { if (!cancelled) setStats(result); }).catch((err) => {
+        if (!cancelled && err.status === 401) handleAuthRequired();
+      });
+    }, 1200);
+    return () => { cancelled = true; window.clearTimeout(secondaryTimer); };
+  }, [authLoading, authRequired, authUser, deepLinkedItemId, handleAuthRequired, loadDashboardCounts]);
+
+  useEffect(() => {
+    if (!dashboardCacheIdentity) return;
+    try {
+      const cached = JSON.parse(window.localStorage.getItem(`notifierr_dashboard_counts_${dashboardCacheIdentity}`) || "null");
+      if (cached?.counts) {
+        const primaryCounts = Object.fromEntries(["high_quality", "profitable", "review", "actionable"]
+          .map((key) => [key, cached.counts[key] ?? 0]));
+        setDashboardCounts((current) => ({ ...primaryCounts, ...current }));
+        setCountsComputedAt(cached.computed_at || "");
+      }
+    } catch { /* Ignore damaged local cache and fetch fresh counts. */ }
+  }, [dashboardCacheIdentity]);
+
+  useEffect(() => {
+    if (!deepLinkedItemId || authLoading || (authRequired && !authUser)) return undefined;
+    let cancelled = false;
+    setDetailItem(null);
+    setDetailState("loading");
+    setDetailError("");
+    getItemDetail(deepLinkedItemId).then((result) => {
+      if (!cancelled) {
+        setDetailItem(result.item || null);
+        setDetailState(result.item ? "loaded" : "unavailable");
+      }
+    }).catch((err) => {
+      if (cancelled) return;
+      if (err.status === 401) handleAuthRequired();
+      else if (err.status === 404) setDetailState("unavailable");
+      else { setDetailError(err.message); setDetailState("error"); }
+    });
+    return () => { cancelled = true; };
+  }, [deepLinkedItemId, authLoading, authRequired, authUser, handleAuthRequired]);
 
   useEffect(() => {
     if (authLoading || (authRequired && !authUser)) {
@@ -342,19 +462,6 @@ export default function App() {
     };
   }, [authLoading, authRequired, authUser, handleAuthRequired, loadDashboard]);
 
-  useEffect(() => {
-    if (!stats || userSelectedTab) {
-      return;
-    }
-    if ((stats.best_finds ?? 0) > 0) {
-      setActiveTab("high_quality");
-    } else if ((stats.priority_review ?? 0) > 0) {
-      setActiveTab("priority_review");
-    } else {
-      setActiveTab("needs_data");
-    }
-  }, [stats, userSelectedTab]);
-
   async function handleLogin(event) {
     event.preventDefault();
     setError("");
@@ -366,7 +473,6 @@ export default function App() {
       setAuthUser(result.user);
       setAuthRequired(true);
       setLoginPassword("");
-      await loadDashboard();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -393,7 +499,6 @@ export default function App() {
       setRegisterInviteCode("");
       const status = await getAuthStatus();
       applyAuthStatus(status);
-      await loadDashboard();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -437,6 +542,13 @@ export default function App() {
   function openDashboardPanel() {
     setSettingsOpen(false);
     setAdminOpen(false);
+  }
+
+  function closeOpportunityDetail() {
+    window.history.replaceState({}, "", dashboardPathWithoutDeepLink());
+    setDeepLinkedItemId("");
+    setPreviewMode(true);
+    setActiveTab("actionable");
   }
 
   async function handleSaveUserSettings(event) {
@@ -822,6 +934,27 @@ export default function App() {
     );
   }
 
+  if (deepLinkedItemId) {
+    return <OpportunityDetail
+      item={detailItem}
+      state={detailState}
+      error={detailError}
+      onBack={closeOpportunityDetail}
+      onRetry={() => {
+        setDetailState("loading");
+        setDetailError("");
+        getItemDetail(deepLinkedItemId).then((result) => {
+          setDetailItem(result.item || null);
+          setDetailState(result.item ? "loaded" : "unavailable");
+        }).catch((err) => {
+          if (err.status === 401) handleAuthRequired();
+          else if (err.status === 404) setDetailState("unavailable");
+          else { setDetailError(err.message); setDetailState("error"); }
+        });
+      }}
+    />;
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar workspace-topbar">
@@ -841,19 +974,6 @@ export default function App() {
             ) : null}
           </div>
           {authUser ? <div className="session-chip">{authUser.display_name || authUser.email}</div> : null}
-          <form className="keyword-form" onSubmit={handleAddIgnoredKeyword}>
-            <input
-              value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
-              placeholder="Ignore keyword"
-              aria-label="Ignore keyword"
-            />
-            <button type="submit">Add</button>
-          </form>
-          <button className="primary-button" onClick={handleRunScan} disabled={scanning}>
-            {scanning ? "Scanning..." : "Run Scan"}
-          </button>
-          {authUser ? <button type="button" onClick={handleLogout}>Logout</button> : null}
         </div>
       </header>
 
@@ -864,14 +984,23 @@ export default function App() {
         stats={stats}
         pollingStatus={pollingStatus}
         counts={tabCounts}
+        countsComputedAt={countsComputedAt}
+        countsLoading={countsLoading}
         activeStatus={activeTab}
         onChange={(tab) => {
-          setUserSelectedTab(true);
+          setPreviewMode(false);
           setActiveTab(tab);
         }}
       />
 
-      <section className="workspace-controls">
+      {countsError ? <p className="counts-error" role="status">Counts could not refresh: {countsError}</p> : null}
+
+      {previewMode ? <section className="content-header compact-header actionable-heading">
+        <div><h2>Actionable opportunities</h2><p>{items.length ? `${items.length} recent opportunities` : "Your first actionable phones will appear here"}</p></div>
+        <button type="button" onClick={() => { setPreviewMode(false); setActiveTab("actionable"); }}>Browse all</button>
+      </section> : null}
+
+      {!previewMode ? <section className="workspace-controls">
         <div className="utility-controls">
           <input
             value={searchText}
@@ -902,14 +1031,14 @@ export default function App() {
             Include stale
           </label>
         </div>
-      </section>
+      </section> : null}
 
-      <section className="content-header compact-header">
+      {!previewMode ? <section className="content-header compact-header">
         <div>
           <h2>{TABS[activeTab]} listings</h2>
           <p>{dashboardTotal} matching listings{refreshingDashboard ? " · refreshing…" : ""}</p>
         </div>
-      </section>
+      </section> : null}
 
       <ItemTable
         items={visibleItems}
@@ -960,13 +1089,26 @@ export default function App() {
           }
         }}
       />
-      {dashboardTotal > DASHBOARD_PAGE_SIZE ? (
+      {previewMode && pageHasMore ? <div className="preview-more"><button type="button" onClick={() => { setPreviewMode(false); setActiveTab("actionable"); }}>Browse all actionable opportunities</button></div> : null}
+      {!previewMode && dashboardTotal > DASHBOARD_PAGE_SIZE ? (
         <nav className="dashboard-pagination" aria-label="Listing pages">
           <button type="button" disabled={pageOffset === 0} onClick={() => setPageOffset((current) => Math.max(0, current - DASHBOARD_PAGE_SIZE))}>Previous</button>
           <span>{pageOffset + 1}–{Math.min(pageOffset + DASHBOARD_PAGE_SIZE, dashboardTotal)} of {dashboardTotal}</span>
           <button type="button" disabled={pageOffset + DASHBOARD_PAGE_SIZE >= dashboardTotal} onClick={() => setPageOffset((current) => current + DASHBOARD_PAGE_SIZE)}>Next</button>
         </nav>
       ) : null}
+
+      <details className="dashboard-tools">
+        <summary>Dashboard tools and account</summary>
+        <div className="dashboard-tools-content">
+          <form className="keyword-form" onSubmit={handleAddIgnoredKeyword}>
+            <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="Ignore keyword" aria-label="Ignore keyword" />
+            <button type="submit">Add</button>
+          </form>
+          <button className="primary-button" onClick={handleRunScan} disabled={scanning}>{scanning ? "Scanning..." : "Run Scan"}</button>
+          {authUser ? <button type="button" onClick={handleLogout}>Logout</button> : null}
+        </div>
+      </details>
 
       {settingsOpen ? (
         <section className="settings-overlay" aria-label="User settings">

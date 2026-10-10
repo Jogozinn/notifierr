@@ -72,7 +72,7 @@ Use Cloudflare Pages Free for the static frontend. Enable Northflank's no-overla
 
 ## PWA and Web Push
 
-The frontend ships a manifest, 192/512 icons, and a service worker that handles notifications without caching the application shell. This avoids stale JavaScript after deployment. On iPhone, open the HTTPS frontend in Safari, choose **Share → Add to Home Screen**, launch the installed app, sign in, and enable push in Settings. iOS requires this user gesture.
+The frontend ships a manifest, 192/512 icons, and a service worker that handles notifications without caching the application shell. This avoids stale JavaScript after deployment. Push notifications include the stable marketplace item ID and a URL of the form `/?item=<encoded-id>`. On click, the service worker focuses and navigates an existing app window or opens that URL when the app is closed; after authentication, the frontend fetches the user-scoped item detail directly, including listings older than the 36-hour dashboard window. An unavailable item gets an explicit unavailable state. On iPhone, open the HTTPS frontend in Safari, choose **Share → Add to Home Screen**, launch the installed app, sign in, and enable push in Settings. iOS requires this user gesture.
 
 Subscriptions are user-scoped and encrypted at rest. Multiple devices are supported. Provider HTTP 404/410 disables the dead subscription. Notification clicks use `/?item=<marketplace-item-id>` and the dashboard opens the matching listing search. Discord remains an independent secondary destination.
 

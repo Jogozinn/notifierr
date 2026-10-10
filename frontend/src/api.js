@@ -1,5 +1,7 @@
 import { dashboardItemsPath } from "./dashboardQuery.js";
 
+import { itemDetailPath } from "./notificationRoute.js";
+
 const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 if (import.meta.env.PROD && (!configuredApiBase || !configuredApiBase.startsWith("https://"))) {
   throw new Error("Production build requires an HTTPS VITE_API_BASE_URL");
@@ -320,13 +322,23 @@ export function getDashboardItems({ queue, sort, search, includeIgnored, include
   return request(dashboardItemsPath({ queue, sort, search, includeIgnored, includeStale, limit, offset }));
 }
 
+export function getDashboardCounts({ includeSecondary = false } = {}) {
+  const params = new URLSearchParams({ include_secondary: String(includeSecondary) });
+  return request(`/items/dashboard/counts?${params.toString()}`);
+}
+
+export function getDashboardPreview({ limit = 12 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return request(`/items/dashboard/preview?${params.toString()}`);
+}
+
 export function getDashboardChanges(after = "") {
   const params = new URLSearchParams({ after });
   return request(`/items/dashboard/changes?${params.toString()}`);
 }
 
 export function getItemDetail(itemId) {
-  return request(`/items/${encodeURIComponent(itemId)}/detail`);
+  return request(itemDetailPath(itemId));
 }
 
 export function runScan() {

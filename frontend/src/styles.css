@@ -3138,6 +3138,58 @@ textarea:focus {
   }
 }
 
+/* Notification details and the compact phone-first dashboard. */
+.stats-primary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.stat-primary { min-width: 0; }
+.counts-freshness { margin: 8px 2px 0; color: var(--muted, #718096); font-size: .78rem; }
+.counts-error { margin: 4px 0 10px; color: #9a3412; font-size: .82rem; }
+.secondary-dashboard-details { margin-top: 14px; }
+.actionable-heading { margin-top: 8px; }
+.preview-more { display: flex; justify-content: center; padding: 14px; }
+.dashboard-tools { margin: 18px 0 28px; padding: 12px 14px; border: 1px solid rgba(148, 163, 184, .28); border-radius: 14px; }
+.dashboard-tools summary { cursor: pointer; font-weight: 650; }
+.dashboard-tools-content { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 12px; }
+.opportunity-detail-shell { max-width: 920px; padding-top: max(18px, env(safe-area-inset-top)); }
+.opportunity-detail-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+.detail-back-button { min-height: 44px; }
+.opportunity-detail-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; padding: clamp(16px, 4vw, 30px); border: 1px solid rgba(148, 163, 184, .28); border-radius: 20px; background: var(--panel, #fff); overflow: hidden; }
+.opportunity-detail-image { width: 100%; max-height: 360px; object-fit: contain; border-radius: 12px; background: #f8fafc; }
+.detail-model { margin: 0 0 4px; color: var(--muted, #718096); }
+.opportunity-detail-copy h1 { margin: 0; overflow-wrap: anywhere; }
+.detail-status-line { display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--muted, #718096); }
+.opportunity-detail-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.opportunity-detail-metric { min-width: 0; padding: 14px; border-radius: 12px; background: #f8fafc; }
+.opportunity-detail-metric span { display: block; font-size: .8rem; color: var(--muted, #64748b); }
+.opportunity-detail-metric strong { display: block; margin-top: 5px; font-size: clamp(1.1rem, 5vw, 1.55rem); overflow-wrap: anywhere; }
+.metric-important { background: #ecfdf5; }
+.opportunity-detail-risks li { margin: 6px 0; overflow-wrap: anywhere; }
+.opportunity-detail-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.opportunity-detail-actions p { max-width: 100%; overflow-wrap: anywhere; }
+.action-link { display: inline-flex; align-items: center; text-decoration: none; }
+.opportunity-detail-state { margin-top: 20px; padding: 22px; border-radius: 16px; background: var(--panel, #fff); }
+.opportunity-detail-state p { overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .app-shell { width: 100%; max-width: 100%; padding-left: 12px; padding-right: 12px; overflow-x: clip; }
+  .stats-primary-grid { gap: 6px; }
+  .stat-primary { padding: 12px 6px; }
+  .stat-primary .stat-label { font-size: .66rem; letter-spacing: .02em; }
+  .stat-primary strong { font-size: clamp(1.2rem, 7vw, 1.8rem); }
+  .workspace-topbar .topbar-actions { flex-wrap: wrap; }
+  .session-chip { max-width: 100%; overflow-wrap: anywhere; }
+  .actionable-heading { align-items: center; gap: 8px; }
+  .actionable-heading h2 { font-size: 1.15rem; }
+  .opportunity-detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .opportunity-detail-card { padding: 14px; }
+  .dashboard-tools-content > * { min-width: 0; max-width: 100%; }
+  input, select, textarea, button { max-width: 100%; }
+}
+
 .auth-brand {
   display: flex;
   align-items: center;
@@ -3849,4 +3901,13 @@ body,
     font-size: .7rem;
     white-space: nowrap;
   }
+}
+
+@media (max-width: 760px) {
+  .stats-primary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .stat-primary { min-width: 0; padding: 12px 6px; }
+  .stat-primary .stat-label { font-size: .66rem; letter-spacing: .02em; }
+  .stat-primary strong { font-size: clamp(1.2rem, 7vw, 1.8rem); }
+  .app-shell { width: 100%; max-width: 100%; overflow-x: clip; }
+  .opportunity-detail-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

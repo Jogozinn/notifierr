@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node test/autoscanStatus.test.js && node test/notificationStatus.test.js && node test/dashboardQuery.test.js",
+    "test": "node test/autoscanStatus.test.js && node test/notificationStatus.test.js && node test/dashboardQuery.test.js && node test/serviceWorkerNavigation.test.js && node test/notificationRoute.test.js",
     "build": "vite build",
     "preview": "vite preview"
   },

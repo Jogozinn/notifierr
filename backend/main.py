@@ -75,6 +75,8 @@ _dashboard_freshness_cache: dict[int, dict[str, int]] = {}
 _pricing_context_cache: dict[int, UserPricingContext] = {}
 _dashboard_stats_cache: dict[int, tuple[float, dict[str, Any]]] = {}
 _DASHBOARD_STATS_CACHE_SECONDS = 30
+_dashboard_counts_cache: dict[int, tuple[float, dict[str, Any]]] = {}
+_DASHBOARD_COUNTS_CACHE_SECONDS = 15
 _polling_status_cache: dict[int, tuple[float, dict[str, Any]]] = {}
 _POLLING_STATUS_CACHE_SECONDS = 10
 _bearer = HTTPBearer(auto_error=False)
@@ -101,16 +103,19 @@ def _utc_now_iso() -> str:
 def _invalidate_dashboard_user_cache(user_id: int) -> None:
     _dashboard_freshness_cache.pop(int(user_id), None)
     _dashboard_stats_cache.pop(int(user_id), None)
+    _dashboard_counts_cache.pop(int(user_id), None)
     _polling_status_cache.pop(int(user_id), None)
 
 
 def _invalidate_pricing_context_cache(user_id: int) -> None:
     _pricing_context_cache.pop(int(user_id), None)
     _dashboard_stats_cache.pop(int(user_id), None)
+    _dashboard_counts_cache.pop(int(user_id), None)
 
 
 def _invalidate_all_dashboard_stats_cache() -> None:
     _dashboard_stats_cache.clear()
+    _dashboard_counts_cache.clear()
 
 
 def _invalidate_polling_status_cache() -> None:
@@ -4520,6 +4525,7 @@ def put_item_correction(
     pricing_context = _build_user_pricing_context(int(user["id"]))
     rescored = _rescore_stored_item(current_item, resolved, pricing_context=pricing_context)
     _dashboard_stats_cache.pop(int(user["id"]), None)
+    _dashboard_counts_cache.pop(int(user["id"]), None)
     return {
         "ok": True,
         "correction": correction,
@@ -4547,6 +4553,7 @@ def delete_item_correction(
     pricing_context = _build_user_pricing_context(int(user["id"]))
     rescored = _rescore_stored_item(current_item, resolved, pricing_context=pricing_context)
     _dashboard_stats_cache.pop(int(user["id"]), None)
+    _dashboard_counts_cache.pop(int(user["id"]), None)
     return {
         "ok": True,
         "correction": None,
@@ -4635,7 +4642,6 @@ def list_items(
     user_id = int(user["id"])
     offset_value = offset if isinstance(offset, int) else 0
     freshness_kwargs = _dashboard_freshness_kwargs(user_id)
-    pricing_context = _cached_pricing_context_for_user(user_id)
     missed_opportunities = status == "missed_opportunities"
     unsent_actionable = status == "unsent_actionable"
     items = storage.list_user_items(
@@ -4650,12 +4656,29 @@ def list_items(
         source_max_age_hours=source_max_age_hours,
         **freshness_kwargs,
     )
+    decorated = _decorate_dashboard_items(user, items)
+    if unsent_actionable:
+        return [item for item in decorated if item.get("never_notified_actionable")][offset_value:offset_value + limit]
+    if missed_opportunities:
+        decorated = [
+            item for item in decorated
+            if _is_missed_opportunity(item)
+        ]
+        return decorated[offset_value:offset_value + limit]
+    return decorated
+
+
+def _decorate_dashboard_items(user: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not items:
+        return []
+    user_id = int(user["id"])
     corrections = storage.list_user_item_corrections_for_items(
         user_id,
         [str(item.get("item_id") or "") for item in items],
     )
     correction_by_item_id = {str(correction.get("item_id") or ""): correction for correction in corrections}
     resolved = _resolve_effective_user_settings(user)
+    pricing_context = _cached_pricing_context_for_user(user_id)
     decorated = [
         _decorate_alert_decision(_decorate_item_for_user(
             item,
@@ -4671,24 +4694,18 @@ def list_items(
         item["never_notified_actionable"] = bool(
             item.get("alert_tier") in {"GEM", "PROFITABLE"} and not item["successfully_notified"]
         )
-    if unsent_actionable:
-        return [item for item in decorated if item.get("never_notified_actionable")][offset_value:offset_value + limit]
-    if missed_opportunities:
-        decorated = [
-            item for item in decorated
-            if _is_missed_opportunity(item)
-        ]
-        return decorated[offset_value:offset_value + limit]
     return decorated
 
 
 _DASHBOARD_QUEUES = {
-    "high_quality", "profitable", "review", "unsent_actionable", "missed_opportunities",
+    "actionable", "high_quality", "profitable", "review", "unsent_actionable", "missed_opportunities",
     "priority_review", "needs_data", "watched", "promoted", "ignored", "rejected", "all",
 }
 
 
 def _dashboard_queue_matches(item: dict[str, Any], queue: str) -> bool:
+    if queue == "actionable":
+        return item.get("alert_tier") in {"GEM", "PROFITABLE", "REVIEW"}
     if queue == "high_quality":
         return item.get("alert_tier") == "GEM"
     if queue == "profitable":
@@ -4739,6 +4756,136 @@ def _dashboard_visible_in_queue(
         and (include_stale or queue == "all" or item.get("fresh_for_active_queue") is not False)
         and _dashboard_queue_matches(item, queue)
     )
+
+
+@app.get("/items/dashboard/counts")
+def dashboard_counts(
+    include_secondary: bool = False,
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    """Short-lived, user-scoped queue counts for the dashboard's first render."""
+    user_id = int(user["id"])
+    now = monotonic_time.perf_counter()
+    cached = _dashboard_counts_cache.get(user_id)
+    if cached and now - cached[0] < _DASHBOARD_COUNTS_CACHE_SECONDS:
+        payload = copy.deepcopy(cached[1])
+        payload["cache_hit"] = True
+        payload["age_seconds"] = round(now - cached[0], 2)
+        return _dashboard_counts_response(payload, include_secondary)
+
+    started = monotonic_time.perf_counter()
+    hot_hours = max(1, int(settings.dashboard_hot_hours))
+    rows = storage.list_user_items(
+        user_id,
+        limit=1500,
+        include_ignored=True,
+        include_stale=False,
+        lightweight=True,
+        source_max_age_hours=hot_hours,
+        **_dashboard_freshness_kwargs(user_id),
+    )
+    decorated = _decorate_dashboard_items(user, rows)
+    counts = {name: 0 for name in _DASHBOARD_QUEUES}
+    watermark = ""
+    for item in decorated:
+        watermark = max(
+            watermark,
+            str(item.get("updated_at") or ""),
+            str(item.get("marketplace_updated_at") or ""),
+            str(item.get("found_at") or ""),
+        )
+        for name in counts:
+            if _dashboard_visible_in_queue(item, name, include_ignored=False, include_stale=False):
+                counts[name] += 1
+
+    payload = {
+        "counts": counts,
+        "computed_at": _utc_now_iso(),
+        "age_seconds": 0,
+        "cache_hit": False,
+        "watermark": watermark,
+        "source_truncated": len(rows) >= 1500,
+        "performance": {
+            "elapsed_ms": round((monotonic_time.perf_counter() - started) * 1000, 1),
+            "source_rows": len(rows),
+            "hot_hours": hot_hours,
+            "lightweight": True,
+        },
+    }
+    _dashboard_counts_cache[user_id] = (monotonic_time.perf_counter(), copy.deepcopy(payload))
+    return _dashboard_counts_response(payload, include_secondary)
+
+
+def _dashboard_counts_response(payload: dict[str, Any], include_secondary: bool) -> dict[str, Any]:
+    response = copy.deepcopy(payload)
+    if not include_secondary:
+        response["counts"] = {
+            key: response["counts"].get(key, 0)
+            for key in ("high_quality", "profitable", "review", "actionable")
+        }
+    return response
+
+
+@app.get("/items/dashboard/preview")
+def dashboard_preview(
+    limit: int = Query(default=12, ge=1, le=24),
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    """Return the first actionable items without waiting to count every dashboard queue."""
+    started = monotonic_time.perf_counter()
+    user_id = int(user["id"])
+    hot_hours = max(1, int(settings.dashboard_hot_hours))
+    source_cap = 1500
+    batch_limit = 100
+    source_offset = 0
+    source_rows = 0
+    watermark = ""
+    matched: list[dict[str, Any]] = []
+    while source_rows < source_cap and len(matched) <= limit:
+        rows = storage.list_user_items(
+            user_id,
+            limit=min(batch_limit, source_cap - source_rows),
+            offset=source_offset,
+            include_ignored=True,
+            include_stale=False,
+            lightweight=True,
+            source_max_age_hours=hot_hours,
+            **_dashboard_freshness_kwargs(user_id),
+        )
+        if not rows:
+            break
+        source_rows += len(rows)
+        source_offset += len(rows)
+        for item in _decorate_dashboard_items(user, rows):
+            watermark = max(
+                watermark,
+                str(item.get("updated_at") or ""),
+                str(item.get("marketplace_updated_at") or ""),
+                str(item.get("found_at") or ""),
+            )
+            if _dashboard_visible_in_queue(item, "actionable", include_ignored=False, include_stale=False):
+                matched.append(item)
+                if len(matched) > limit:
+                    break
+        if len(rows) < batch_limit:
+            break
+
+    source_truncated = source_rows >= source_cap
+    elapsed_ms = round((monotonic_time.perf_counter() - started) * 1000, 1)
+    return {
+        "items": matched[:limit],
+        "has_more": len(matched) > limit or source_truncated,
+        "limit": limit,
+        "watermark": watermark,
+        "source_truncated": source_truncated,
+        "performance": {
+            "elapsed_ms": elapsed_ms,
+            "source_rows": source_rows,
+            "returned_items": min(limit, len(matched)),
+            "hot_hours": hot_hours,
+            "lightweight": True,
+        },
+    }
 
 
 def _dashboard_sort_key(item: dict[str, Any], sort: str, queue: str) -> tuple[Any, ...]:
@@ -4861,6 +5008,18 @@ def item_detail(
     item_id: str,
     user: dict[str, Any] = Depends(require_settings_user),
 ) -> dict[str, Any]:
+    return _item_detail_payload(user, item_id)
+
+
+@app.get("/items/detail")
+def item_detail_by_query(
+    item_id: str = Query(min_length=1, max_length=200),
+    user: dict[str, Any] = Depends(require_settings_user),
+) -> dict[str, Any]:
+    return _item_detail_payload(user, item_id)
+
+
+def _item_detail_payload(user: dict[str, Any], item_id: str) -> dict[str, Any]:
     user_id = int(user["id"])
     resolved = _resolve_effective_user_settings(user)
     item = storage.get_user_item(user_id, item_id, **resolved.freshness_kwargs())
@@ -5067,6 +5226,7 @@ def note_item(
     try:
         updated = storage.set_user_item_note(int(user["id"]), item_id, request.note)
         _dashboard_stats_cache.pop(int(user["id"]), None)
+        _dashboard_counts_cache.pop(int(user["id"]), None)
         return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None
@@ -5082,6 +5242,7 @@ def ignore_item_seller(
     try:
         updated = storage.ignore_seller_from_item(item_id, user_id=int(user["id"]), reason=request.reason or "Ignored seller")
         _dashboard_stats_cache.pop(int(user["id"]), None)
+        _dashboard_counts_cache.pop(int(user["id"]), None)
         return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None
@@ -5113,6 +5274,7 @@ def add_ignored_keyword(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     _dashboard_stats_cache.pop(int(user["id"]), None)
+    _dashboard_counts_cache.pop(int(user["id"]), None)
     return {"ok": True, "keyword": request.keyword}
 
 
@@ -7653,6 +7815,7 @@ def _set_item_status(user_id: int, item_id: str, user_status: str, *, ignored_re
     try:
         updated = storage.set_user_item_status(user_id, item_id, user_status, ignored_reason=ignored_reason)
         _dashboard_stats_cache.pop(int(user_id), None)
+        _dashboard_counts_cache.pop(int(user_id), None)
         return updated
     except KeyError:
         raise HTTPException(status_code=404, detail="Item not found") from None

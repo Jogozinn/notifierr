@@ -3278,7 +3278,7 @@ class Storage:
         max_priority_review_item_age_hours: int = DEFAULT_MAX_PRIORITY_REVIEW_ITEM_AGE_HOURS,
         max_active_queue_item_age_hours: int = DEFAULT_MAX_ACTIVE_QUEUE_ITEM_AGE_HOURS,
     ) -> list[dict[str, Any]]:
-        limit = max(1, min(limit, 500))
+        limit = max(1, min(limit, 1500))
         offset = max(0, int(offset or 0))
         clauses = ["uis.user_id = ?"]
         params: list[Any] = [user_id]

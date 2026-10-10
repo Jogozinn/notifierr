@@ -106,7 +106,8 @@ def push_payload(item: dict[str, Any], *, tier: str, test: bool = False) -> dict
     return {
         "title": title[:120],
         "body": " · ".join(body_parts)[:240],
-        "url": f"/?item={quote(item_id)}",
+        "item_id": item_id,
+        "url": f"/?item={quote(item_id, safe='')}",
         "tag": f"notifierr-{item_id or tier.lower()}",
         "tier": tier,
     }

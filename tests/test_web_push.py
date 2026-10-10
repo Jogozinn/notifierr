@@ -13,9 +13,10 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from backend.config import Settings
 from backend import main
 from backend.auth import hash_password
-from backend.push import endpoint_hash, send_push_to_user
+from backend.push import endpoint_hash, push_payload, send_push_to_user
 from backend.secrets import encrypt_secret
 from backend.storage import Storage
+from urllib.parse import parse_qs, urlsplit
 
 
 def _settings() -> Settings:
@@ -55,6 +56,14 @@ def _subscription(storage: Storage, settings: Settings) -> tuple[int, str]:
     return int(user["id"]), endpoint
 
 
+def test_push_payload_contains_encoded_stable_item_deep_link():
+    payload = push_payload({"item_id": "v1|phone/with space", "total_cost": 175}, tier="PROFITABLE")
+
+    assert payload["item_id"] == "v1|phone/with space"
+    assert payload["url"] == "/?item=v1%7Cphone%2Fwith%20space"
+    assert parse_qs(urlsplit(payload["url"]).query)["item"] == [payload["item_id"]]
+
+
 def test_push_delivery_records_selected_and_accepted(tmp_path: Path) -> None:
     storage = Storage(tmp_path / "push.sqlite3")
     settings = _settings()
@@ -79,6 +88,7 @@ def test_push_delivery_records_selected_and_accepted(tmp_path: Path) -> None:
     assert calls[0]["subscription_info"]["endpoint"] == endpoint
     payload = json.loads(calls[0]["data"])
     assert payload["title"] == "iPhone 15 · $220 · +$90 projected"
+    assert payload["item_id"] == "123"
     assert payload["url"] == "/?item=123"
     assert payload["body"] == "GEM · Repair opportunity · Just listed"
     assert [row["status"] for row in storage.list_push_delivery_attempts(user_id)] == ["accepted", "attempted", "selected"]
